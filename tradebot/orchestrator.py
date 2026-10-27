@@ -28,8 +28,10 @@ def completed_bars(df: pd.DataFrame, tf: str, now=None) -> pd.DataFrame:
     """Drop the bar that is still forming so signals never use partial data."""
     now = now or pd.Timestamp.now(tz="UTC")
     if tf == "1d":
-        today = now.tz_convert("America/New_York").date()
-        return df[df.index.tz_convert("America/New_York").date < today]
+        ny = now.tz_convert("America/New_York")
+        if ny.hour * 60 + ny.minute >= 16 * 60 + 15:  # today's daily bar is final after the close
+            return df[df.index.tz_convert("America/New_York").date <= ny.date()]
+        return df[df.index.tz_convert("America/New_York").date < ny.date()]
     return df[df.index + _bar_length(tf) <= now]
 
 

@@ -135,3 +135,12 @@ def test_run_once_sends_risk_sized_order(tmp_path, monkeypatch):
     assert b.orders and b.orders[0][0] == "buy"
     _, _, qty, stop = b.orders[0]
     assert qty * (df.loc[t, "close"] - stop) <= 1000 + 1e-6
+
+
+def test_completed_daily_bars_before_and_after_close():
+    df = make_daily(10)
+    last = df.index[-1]
+    morning = pd.Timestamp(last.date(), tz="America/New_York") + pd.Timedelta(hours=9)
+    evening = pd.Timestamp(last.date(), tz="America/New_York") + pd.Timedelta(hours=17)
+    assert orchestrator.completed_bars(df, "1d", morning.tz_convert("UTC")).index[-1] == df.index[-2]
+    assert orchestrator.completed_bars(df, "1d", evening.tz_convert("UTC")).index[-1] == last

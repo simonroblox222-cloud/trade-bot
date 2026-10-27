@@ -62,9 +62,15 @@ def cmd_live(a, settings):
     live_loop(settings, get_strategy(a.strategy), a.timeframe, a.dry_run)
 
 
+def cmd_status(a, settings):
+    from tradebot.status import snapshot
+
+    print("written to", snapshot(settings))
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("command", choices=["backtest", "account", "run-once", "live"])
+    p.add_argument("command", choices=["backtest", "account", "run-once", "live", "status"])
     p.add_argument("--strategy", default="rsi2", choices=sorted(STRATEGIES))
     p.add_argument("--symbols", help="comma separated, default: config.py list")
     p.add_argument("--timeframe", default="1d")
@@ -81,7 +87,7 @@ def main():
     settings = Settings()
     if a.symbols:
         settings.symbols = [s.strip().upper() for s in a.symbols.split(",")]
-    {"backtest": cmd_backtest, "account": cmd_account, "run-once": cmd_run_once, "live": cmd_live}[a.command](a, settings)
+    {"backtest": cmd_backtest, "account": cmd_account, "run-once": cmd_run_once, "live": cmd_live, "status": cmd_status}[a.command](a, settings)
 
 
 if __name__ == "__main__":
