@@ -79,6 +79,10 @@ def run_backtest(bars: dict, strategy: Strategy, capital=100_000.0,
             pending[sym] = signals[sym].loc[t]
         eq = equity()
         rm.update(eq)
+        if rm.state.reason == "max_drawdown" and positions:  # kill switch flattens, like live
+            for sym in list(positions):
+                close(sym, last_close[sym], t, "kill_switch")
+            eq = equity()
         curve.append((t, eq))
 
     for sym in list(positions):

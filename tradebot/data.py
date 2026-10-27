@@ -24,14 +24,19 @@ def _timeframe(tf: str):
     return TimeFrame(amount, getattr(TimeFrameUnit, unit))
 
 
+def _utc(t) -> pd.Timestamp:
+    t = pd.Timestamp(t)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
 def fetch_bars(settings: Settings, symbols, start, end=None, timeframe="1d", use_cache=True) -> dict:
     """Return {symbol: DataFrame[open, high, low, close, volume]} indexed by UTC timestamp."""
     from alpaca.data.enums import Adjustment, DataFeed
     from alpaca.data.requests import StockBarsRequest
 
-    start = pd.Timestamp(start, tz="UTC")
+    start = _utc(start)
     # the free IEX feed refuses the most recent 15 minutes
-    end = pd.Timestamp(end, tz="UTC") if end else pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=16)
+    end = _utc(end) if end else pd.Timestamp.now(tz="UTC") - pd.Timedelta(minutes=16)
     out, missing = {}, []
     for s in symbols:
         path = CACHE / f"{s}_{timeframe}_{start.date()}_{end.date()}.csv"
