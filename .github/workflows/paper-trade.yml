@@ -1,9 +1,11 @@
 name: paper-trade
 # Daily strategies decide on yesterday's close and send orders before the open.
-# 13:15 UTC = 9:15 New York in summer, 8:15 in winter: always before the 9:30 open.
+# GitHub often starts scheduled runs late, so run early and again as a backup.
+# A second run the same morning is harmless: the bot skips symbols it already holds or has orders for.
 on:
   schedule:
-    - cron: "15 13 * * 1-5"
+    - cron: "30 11 * * 1-5"
+    - cron: "45 12 * * 1-5"
   workflow_dispatch:
 
 jobs:
