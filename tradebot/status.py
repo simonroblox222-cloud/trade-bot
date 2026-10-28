@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
+
 from .config import Settings
 from .data import recent_bars
 from .execution import Broker
@@ -69,7 +71,11 @@ def snapshot(settings: Settings, out_dir="reports/dashboard", entry_rsi=10):
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    for name, rows in dict(account=account, equity=equity, positions=positions, orders=orders,
-                           signals=signals).items():
+    for name, rows in dict(account=account, equity=equity, signals=signals).items():
         (out / f"{name}.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1))
+    # CSV keeps the header when there are no rows, so an empty table still loads
+    pd.DataFrame(positions, columns=["symbol", "name", "qty", "avg_price", "price", "value", "pnl", "pnl_pct"]) \
+        .to_csv(out / "positions.csv", index=False)
+    pd.DataFrame(orders, columns=["time", "symbol", "side", "type", "qty", "fill_price", "status", "id"]) \
+        .to_csv(out / "orders.csv", index=False)
     return out
