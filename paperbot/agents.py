@@ -72,6 +72,7 @@ class Scanner:
         self.log = log
         self._logged: dict[str, float] = {}
         self._streak: dict[str, int] = {}
+        self._err_logged: dict[str, float] = {}
 
     def reset_streaks(self) -> None:
         """Scanning paused (positions full / halted): confirmations must start over."""
@@ -101,7 +102,11 @@ class Scanner:
         if self.memory is not None:
             self.memory.observe(cands)
         for err in getattr(self.discovery, "last_errors", []) or []:
-            self.log.log("Scanner", "warn", f"source error: {err}")
+            # same error from the same source: one line per 10 minutes, not one per tick
+            key = err.split(" paused ")[0]
+            if now - self._err_logged.get(key, 0) > 600:
+                self._err_logged[key] = now
+                self.log.log("Scanner", "warn", f"source error: {err}")
         blacklist = set(self.store.get("blacklist", []))
         picked, passing = [], []
         for c in cands:

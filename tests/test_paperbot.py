@@ -777,5 +777,90 @@ class CriticTests(unittest.TestCase):
             self.assertEqual(sum(st["critic_counts"].values()), len(decisions))
 
 
+# ------------------------------------------------------- blocked APIs (403)
+import io  # noqa: E402
+import urllib.error  # noqa: E402
+from email.message import Message  # noqa: E402
+from paperbot import http as H  # noqa: E402
+from paperbot.ratelimit import RateLimited, RateLimiter  # noqa: E402
+
+CF_PAGE = (b'<!DOCTYPE html><html lang="en-US"><head><title>Just a moment...</title>'
+           b'<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">' + b"x" * 2000)
+
+
+def cf_403(*_a, **_k):
+    hdrs = Message()
+    hdrs["cf-mitigated"] = "challenge"
+    raise urllib.error.HTTPError("https://frontend-api-v3.pump.fun/coins?x=1", 403, "Forbidden", hdrs, io.BytesIO(CF_PAGE))
+
+
+class BlockedApiTests(unittest.TestCase):
+    def test_cloudflare_403_pauses_source_with_short_message(self):
+        clock = FakeClock()
+        lim = RateLimiter("pumpfun", 20, clock=clock, sleep=clock.sleep)
+        with mock.patch.object(H.urllib.request, "urlopen", side_effect=cf_403) as op:
+            with self.assertRaises(H.HttpError) as cm:
+                H.get_json("https://frontend-api-v3.pump.fun/coins?x=1", limiter=lim, block=False)
+            msg = str(cm.exception)
+            self.assertEqual(msg, "HTTP 403 from frontend-api-v3.pump.fun: Cloudflare bot check")
+            self.assertNotIn("<", msg)
+            self.assertEqual(cm.exception.blocked_s, 900)
+            # while paused nothing is sent: non-blocking callers get RateLimited, blocking ones fail fast
+            with self.assertRaises(RateLimited):
+                H.get_json("https://frontend-api-v3.pump.fun/coins", limiter=lim, block=False)
+            with self.assertRaises(H.HttpError):
+                H.get_json("https://frontend-api-v3.pump.fun/coins", limiter=lim, block=True)
+            self.assertEqual(op.call_count, 1)
+            self.assertLess(clock.t - 1000.0, 1)   # never slept through the pause
+            clock.t += 901
+            with self.assertRaises(H.HttpError) as cm2:
+                H.get_json("https://frontend-api-v3.pump.fun/coins", limiter=lim, block=False)
+            self.assertEqual(cm2.exception.blocked_s, 1800)   # backoff grows
+        self.assertIn("Cloudflare", lim.snapshot()["blocked"])
+
+    def test_discovery_runs_on_dexscreener_when_pumpfun_blocked(self):
+        limits = sources.Limits({"pumpfun": 20, "dexscreener_profiles": 55, "dexscreener_pairs": 250})
+        api = C.ApiConfig(use_boosts=False)
+        d = sources.MarketDiscovery(api, limits)
+        pair = {"baseToken": {"address": MINT, "symbol": "TOK"}, "quoteToken": {"symbol": "SOL"},
+                "liquidity": {"usd": 50_000}, "dexId": "pumpswap"}
+
+        def fake_get(url, *a, **k):
+            if "pump.fun" in url:
+                return H.get_json(url, *a, **k)   # goes to the patched urlopen -> 403
+            if "token-profiles" in url:
+                return [{"chainId": "solana", "tokenAddress": MINT}]
+            return [pair]
+
+        with mock.patch.object(H.urllib.request, "urlopen", side_effect=cf_403), \
+             mock.patch.object(sources, "get_json", side_effect=fake_get):
+            first = d.candidates()
+            self.assertEqual([c.mint for c in first], [MINT])
+            self.assertEqual(len(d.last_errors), 1)
+            self.assertIn("paused 15 min", d.last_errors[0])
+            self.assertIn("DexScreener", d.last_errors[0])
+            for _ in range(5):   # later ticks: no new request, no new error
+                self.assertEqual([c.mint for c in d.candidates()], [MINT])
+                self.assertEqual(d.last_errors, [])
+            self.assertIsNone(sources.PumpFunApi(api, limits).creator_coins("DEV"))
+
+    def test_403_on_jupiter_is_an_outage_not_no_route(self):
+        with mock.patch.object(sources, "get_json", side_effect=H.HttpError("HTTP 403", 403, blocked_s=900)):
+            with self.assertRaises(sources.SourceUnavailable):
+                sources.JupiterQuotes(C.ApiConfig()).quote(C.SOL_MINT, MINT, 1000, 100)
+
+    def test_scanner_logs_same_source_error_once(self):
+        from paperbot.agents import Logger, Scanner
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "t.sqlite"))
+            disc = mock.Mock()
+            disc.candidates.return_value = []
+            disc.last_errors = ["pumpfun: HTTP 403 from frontend-api-v3.pump.fun: Cloudflare bot check, paused 15 min"]
+            sc = Scanner(C.BotConfig(), disc, store, Logger(store, echo=False))
+            for _ in range(10):
+                sc.run(set())
+            self.assertEqual(len([e for e in store.events() if "source error" in e["message"]]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

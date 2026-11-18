@@ -3,6 +3,8 @@
 Token bucket per API: refills at `per_minute / 60` tokens per second, with a small
 burst capacity (1/10 of a minute) so we never fire a whole minute's budget at once
 into an API that counts with a sliding window. HTTP 429 pauses the bucket.
+HTTP 403 (e.g. a Cloudflare bot challenge) means "you're not welcome": the API is
+paused with a long, growing backoff instead of being retried every tick.
 """
 from __future__ import annotations
 
@@ -12,10 +14,18 @@ from collections import deque
 
 
 class RateLimited(Exception):
-    """Raised by a non-blocking acquire when no budget is left right now."""
+    """Raised when no budget is left right now (non-blocking acquire), or the API is
+    paused for longer than a blocking caller should wait (429 / 403 backoff)."""
+
+    def __init__(self, name: str, paused_s: float = 0.0):
+        super().__init__(f"{name} paused {paused_s:.0f}s" if paused_s else name)
+        self.paused_s = paused_s
 
 
 class RateLimiter:
+    MAX_BLOCK_S = 30.0                       # never stall the bot longer than this on one call
+    BLOCK_BACKOFF_S = (900, 1800, 3600, 7200, 21600)   # 15 min .. 6 h after repeated 403s
+
     def __init__(self, name: str, per_minute: float, clock=time.monotonic, sleep=time.sleep):
         self.name = name
         self.per_minute = float(per_minute)
@@ -32,6 +42,9 @@ class RateLimiter:
         self.http_429 = 0
         self.errors = 0
         self.waited_s = 0.0
+        self.http_403 = 0
+        self.block_streak = 0
+        self.block_reason = ""
 
     def _refill(self, now: float) -> None:
         self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
@@ -55,8 +68,9 @@ class RateLimiter:
                     self.total += 1
                     self.recent.append(now)
                     return
-                if not block:
-                    raise RateLimited(self.name)
+                paused = self.paused_until - now
+                if not block or paused > self.MAX_BLOCK_S:
+                    raise RateLimited(self.name, max(0.0, paused))
                 wait = max(self.paused_until - now, (1 - self.tokens) / self.rate if self.rate else 1.0)
             wait = min(max(wait, 0.01), 60.0)
             self.waited_s += wait
@@ -69,13 +83,31 @@ class RateLimiter:
             self.paused_until = max(self.paused_until, self.clock() + seconds)
             self.tokens = 0.0
 
+    def forbid(self, reason: str) -> float:
+        """Called on HTTP 403: back off for a long, growing time. Returns the pause in seconds."""
+        with self.lock:
+            self.http_403 += 1
+            secs = self.BLOCK_BACKOFF_S[min(self.block_streak, len(self.BLOCK_BACKOFF_S) - 1)]
+            self.block_streak += 1
+            self.block_reason = reason
+            self.paused_until = max(self.paused_until, self.clock() + secs)
+            self.tokens = 0.0
+            return secs
+
+    def succeeded(self) -> None:
+        if self.block_streak:
+            with self.lock:
+                self.block_streak = 0
+                self.block_reason = ""
+
     def snapshot(self) -> dict:
         with self.lock:
             now = self.clock()
             while self.recent and now - self.recent[0] > 60:
                 self.recent.popleft()
             return {"limit_rpm": self.per_minute, "last_min": len(self.recent), "total": self.total,
-                    "http_429": self.http_429, "errors": self.errors, "waited_s": round(self.waited_s, 1),
+                    "http_429": self.http_429, "http_403": self.http_403,
+                    "blocked": self.block_reason if now < self.paused_until else "", "errors": self.errors, "waited_s": round(self.waited_s, 1),
                     "paused_s": round(max(0.0, self.paused_until - now), 1)}
 
 
@@ -91,6 +123,23 @@ class Limits:
     def available(self, name: str) -> float:
         lim = self.limiters.get(name)
         return float("inf") if lim is None else lim.available()
+
+    def forbid(self, reason: str) -> float:
+        """Called on HTTP 403: back off for a long, growing time. Returns the pause in seconds."""
+        with self.lock:
+            self.http_403 += 1
+            secs = self.BLOCK_BACKOFF_S[min(self.block_streak, len(self.BLOCK_BACKOFF_S) - 1)]
+            self.block_streak += 1
+            self.block_reason = reason
+            self.paused_until = max(self.paused_until, self.clock() + secs)
+            self.tokens = 0.0
+            return secs
+
+    def succeeded(self) -> None:
+        if self.block_streak:
+            with self.lock:
+                self.block_streak = 0
+                self.block_reason = ""
 
     def snapshot(self) -> dict:
         return {n: lim.snapshot() for n, lim in self.limiters.items()}

@@ -252,7 +252,7 @@ class Critic:
             return
         coins = self.pumpfun.creator_coins(creator)
         if coins is None:
-            notes.append("dev history unavailable")
+            notes.append("dev history unavailable (pump.fun not reachable)")
             return
         prev = [x for x in coins if isinstance(x, dict) and x.get("mint") != c.mint]
         dead = [x for x in prev if not x.get("complete")

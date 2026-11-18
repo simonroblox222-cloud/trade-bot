@@ -102,7 +102,11 @@ porovnať s reálnymi fillmi.
 - **Paper výsledky sú optimistické.** Reálne swapy majú latenciu, sandwich útoky a zlyhané transakcie; preto
   pesimistický `extra_slippage_bps`. Výsledky z `--mock` sú syntetické a nehovoria nič o ziskovosti stratégie.
 - Ukážková momentum stratégia je len východisko, nie overená výhoda.
-- pump.fun frontend API je neoficiálne (môže blokovať alebo sa zmeniť); vtedy Scanner zapíše varovanie a ide ďalej s DexScreener.
+- pump.fun frontend API je neoficiálne a často ho chráni Cloudflare („Just a moment…“, HTTP 403). Bot ho **neobchádza**:
+  pri 403 dá pump.fun do pauzy (15 min, pri opakovaní 30 min, 1 h, 2 h až 6 h), zapíše jeden riadok a beží ďalej na DexScreeneri,
+  ktorý pump.fun páry tiež vidí (`dexId` pumpfun / pumpswap). Kým je pump.fun v pauze, Social nemá komentáre ani „king of the hill“
+  (ráta len X/Telegram/web z DexScreeneru) a Critic preskočí históriu deva s poznámkou. Kto pump.fun nechce vôbec, dá `use_pumpfun = false`.
+  Rovnako sa správa každé API, ktoré vráti 403.
 - Verejné Solana RPC má prísne rate limity; free Helius/QuickNode endpoint je voliteľný a pomôže s rýchlosťou rug checku.
 - `getTokenLargestAccounts` vracia len 20 najväčších účtov, takže peňaženka rozdelená na veľa malých účtov sa nemusí celá započítať.
 - RugCheck API je bez kľúča a môže mať limity; s `require_rugcheck_api = false` sa výpadok iba zaloguje.

@@ -20,7 +20,8 @@ class SourceUnavailable(HttpError):
 
 
 def _transient(e: HttpError) -> bool:
-    return e.status is None or e.status == 429 or e.status >= 500
+    # 403 = blocked (e.g. Cloudflare) is an outage of the source, never "no route"
+    return e.status is None or e.status in (403, 429) or e.status >= 500 or e.blocked_s > 0
 
 
 class QuoteProvider(Protocol):
@@ -134,7 +135,12 @@ class MarketDiscovery:
             except RateLimited:
                 pass  # budget exhausted this tick: reuse cached list
             except HttpError as e:
-                self.last_errors.append(f"{name}: {e}")
+                if e.blocked_s:
+                    self.last_errors.append(f"{name}: {e}, paused {e.blocked_s / 60:.0f} min"
+                                            + ("; new pump.fun pairs still come via DexScreener" if name == "pumpfun" else ""))
+                    self._mints_cache.pop(name, None)
+                else:
+                    self.last_errors.append(f"{name}: {e}")
             for m in self._mints_cache.get(name, []):
                 sourced.setdefault(m, name)
         boosted = set(self._mints_cache.get("boosts", []))
@@ -284,9 +290,10 @@ class PumpFunApi:
 
     def creator_coins(self, creator: str) -> list[dict] | None:
         try:
+            # non-blocking: when pump.fun is blocked/paused, the Critic just notes "dev history unavailable"
             data = get_json(self.api.pumpfun_creator_coins_url.format(creator=creator), self.api.timeout_s,
-                            limiter=self.limiter)
-        except HttpError:
+                            limiter=self.limiter, block=False)
+        except (HttpError, RateLimited):
             return None
         if isinstance(data, dict):
             data = data.get("coins")

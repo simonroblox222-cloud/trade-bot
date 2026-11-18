@@ -164,7 +164,8 @@ function render(s) {
     const pct = Math.min(100, v.last_min / v.limit_rpm * 100);
     return `<span>${esc(n)} <span class="bar ${pct > 85 ? "hot" : ""}"><i style="width:${pct}%"></i></span><b>${v.last_min}</b>/${v.limit_rpm}` +
       (v.http_429 ? ` <span class="err">429×${v.http_429}</span>` : "") + (v.errors ? ` <span class="err">err×${v.errors}</span>` : "") +
-      (v.paused_s ? ` <span class="err">pauza ${v.paused_s}s</span>` : "") + `</span>`;
+      (v.blocked ? ` <span class="err">${esc(v.blocked)}</span>` : "") +
+      (v.paused_s ? ` <span class="err">pauza ${v.paused_s >= 120 ? Math.round(v.paused_s / 60) + " min" : v.paused_s + "s"}</span>` : "") + `</span>`;
   }).join("") : `<span>API: mock režim (bez limitov)</span>`;
 
   $("kpis").innerHTML = [
