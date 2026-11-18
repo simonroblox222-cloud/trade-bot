@@ -76,7 +76,7 @@ class SocialConfig:
     """Hype proxies without the X API: links, pump.fun comments, king of the hill.
     Paid DexScreener boosts count AGAINST a token."""
     enabled: bool = True
-    min_score: float = 1.0
+    min_score: float = 0.5             # at least one link (X, Telegram or website)
     x_link: float = 1.0
     telegram_link: float = 0.5
     website: float = 0.5
@@ -188,18 +188,21 @@ class RiskConfig:
 @dataclass
 class StrategyConfig:
     min_liquidity_usd: float = 20_000
-    min_volume_h1_usd: float = 15_000
-    min_pair_age_minutes: float = 15
-    max_pair_age_hours: float = 72
-    min_price_change_m5_pct: float = 1.0
-    min_price_change_h1_pct: float = 2.0
-    max_price_change_h1_pct: float = 300.0
-    min_buy_sell_ratio_m5: float = 1.1
+    # "active" paper defaults: trade any pair that is moving up right now with buyers in charge.
+    # Most memecoins bleed over the hour, so h1 only has to be "not crashing". Rug checks and
+    # the Critic are unchanged. For fewer, stronger signals raise m5/h1/ratio/volume.
+    min_volume_h1_usd: float = 10_000
+    min_pair_age_minutes: float = 5
+    max_pair_age_hours: float = 168
+    min_price_change_m5_pct: float = 0.5
+    min_price_change_h1_pct: float = -15.0
+    max_price_change_h1_pct: float = 500.0
+    min_buy_sell_ratio_m5: float = 1.0
     # strong organic hype (Social score, paid boosts count against it) eases the momentum checks
     hype_score: float = 2.5               # e.g. X link + 100 pump.fun comments, or X + TG + KOTH
     hype_min_price_change_m5_pct: float = 0.0
     hype_min_buy_sell_ratio_m5: float = 1.0
-    hype_min_volume_h1_usd: float = 10_000
+    hype_min_volume_h1_usd: float = 5_000
     max_candidates_per_tick: int = 5
     allow_bonding_curve: bool = True      # trade pump.fun tokens before graduation
     confirm_cycles: int = 2               # signal must pass this many scans in a row

@@ -34,7 +34,7 @@ rugcheck = 20
 rpc = 90                            # s free Helius kľúčom pokojne 500
 
 [social]                            # hype bez X API: len počty a prítomnosť, žiadny text sa nečíta
-min_score = 1.0                     # pod týmto skóre Social token pustí ďalej nebude
+min_score = 0.5                     # aspoň jeden odkaz (X, Telegram alebo web)
 x_link = 1.0                        # token má odkaz na X účet
 telegram_link = 0.5
 website = 0.5
@@ -103,16 +103,18 @@ latency_seconds = 2.0           # oneskorenie rozhodnutie -> swap; druhý quote 
 
 [strategy]
 min_liquidity_usd = 20000
-min_volume_h1_usd = 15000
-min_pair_age_minutes = 15
-max_pair_age_hours = 72
-min_price_change_m5_pct = 1
-min_price_change_h1_pct = 2
-max_price_change_h1_pct = 300
-min_buy_sell_ratio_m5 = 1.1
+# "aktívne" paper nastavenie: kúpi pár, ktorý práve rastie a prevažujú kupujúci. Väčšina memecoinov
+# za hodinu klesá, preto h1 stačí "nepadá". Pre menej a silnejších signálov zvýš m5/h1/pomer/objem.
+min_volume_h1_usd = 10000
+min_pair_age_minutes = 5
+max_pair_age_hours = 168
+min_price_change_m5_pct = 0.5
+min_price_change_h1_pct = -15
+max_price_change_h1_pct = 500
+min_buy_sell_ratio_m5 = 1.0
 hype_score = 2.5                # silný organický hype (Social skóre) uvoľní momentum:
 hype_min_price_change_m5_pct = 0
 hype_min_buy_sell_ratio_m5 = 1.0
-hype_min_volume_h1_usd = 10000
+hype_min_volume_h1_usd = 5000
 max_candidates_per_tick = 5
 confirm_cycles = 2              # signál musí platiť toľko skenov po sebe

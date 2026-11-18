@@ -135,6 +135,12 @@ class Scanner:
                 for part in why.split(", "):
                     key = {"buys/sells": "buy/sell ratio", "bonding": "bonding curve"}.get(part.split(" ")[0],
                                                                                            part.split(" ")[0])
+                    if key == "h1":
+                        key = "h1 too high" if c.price_change_h1_pct > self.s.max_price_change_h1_pct else "h1 falling"
+                    elif key == "age":
+                        age = (now - c.pair_created_at_ms / 1000) / 60 if c.pair_created_at_ms else None
+                        key = "age ?" if age is None else ("too young" if age < self.s.min_pair_age_minutes
+                                                            else "too old")
                     self._misses[key] = self._misses.get(key, 0) + 1
         # The signal must hold for `confirm_cycles` scans in a row before we act on it
         # (warp-id/solana-trading-bot CONSECUTIVE_FILTER_MATCHES): filters out one-off spikes.
