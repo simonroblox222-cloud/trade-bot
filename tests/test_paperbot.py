@@ -1149,7 +1149,11 @@ class RunnerTests(unittest.TestCase):
         r = C.RiskConfig()
         # +200 % and 2 h old: a runner in profit stays, a normal position would time out
         self.assertIsNone(exit_reason(1.0, 3.0, 3.1, 120, r, runner=True))
-        self.assertIn("time exit", exit_reason(1.0, 1.05, 1.05, 120, r))
+        # past max hold: a position in profit keeps riding, flat/losing ones go
+        self.assertIsNone(exit_reason(1.0, 1.05, 1.05, 120, r))
+        self.assertIn("time exit", exit_reason(1.0, 1.005, 1.05, 120, r))
+        self.assertIn("time exit", exit_reason(1.0, 0.95, 1.0, 120, r))
+        self.assertIn("from peak", exit_reason(1.0, 1.05, 1.15, 120, r))
         # runner trails 20 % from peak, not 7 %
         self.assertIsNone(exit_reason(1.0, 2.6, 3.0, 5, r, runner=True))
         self.assertIn("runner", exit_reason(1.0, 2.3, 3.0, 5, r, runner=True))
@@ -1223,6 +1227,40 @@ class NoSpamTests(unittest.TestCase):
             self.assertIn("will check again", rejects[0])
             self.assertTrue(ca.waiting(cand()))
             self.assertIn("waiting: TOK", store.get("agent:Critic")["summary"])
+
+
+class AntiSpikeTests(unittest.TestCase):
+    def scanner(self, clock):
+        from paperbot.agents import Scanner
+        mem = MarketMemory(900, clock=clock)
+        return Scanner(C.BotConfig(), mock.Mock(), mock.Mock(), mock.Mock(), mem), mem
+
+    def test_no_buy_on_spike_candle_or_spike_top_but_after_pullback(self):
+        clk = FakeClock()
+        clk.t = time.time()
+        sc, mem = self.scanner(clk)
+        base = dict(pair_created_at_ms=int((clk.t - 3600) * 1000), has_x=True)
+        self.assertIn("spike m5 +22%", sc.signal(cand(**base, price_change_m5_pct=22, price_native=1.0), clk.t)[1])
+        for px in (1.0, 1.1, 1.25):                      # +25 % in a few minutes, now at the top
+            mem.observe([cand(**base, price_native=px)])
+            clk.t += 60
+        ok, why = sc.signal(cand(**base, price_change_m5_pct=4, price_native=1.25), clk.t)
+        self.assertFalse(ok)
+        self.assertIn("waiting for pullback", why)
+        mem.observe([cand(**base, price_native=1.15)])   # pulled back 8 %, still moving up on m5
+        ok, why = sc.signal(cand(**base, price_change_m5_pct=2, price_native=1.15), clk.t)
+        self.assertTrue(ok, why)
+        self.assertIn("pullback 8% from top", why)
+
+    def test_stop_loss_counts_price_move_not_round_trip_costs(self):
+        r = C.RiskConfig()
+        # cost 0.200, right after the buy the tokens are worth 0.188 (impact + fees): -6 %, no stop
+        self.assertIsNone(exit_reason(0.200, 0.188, 0.200, 1, r, stop_base=0.188))
+        # price -10 % since entry: still inside a 12 % stop
+        self.assertIsNone(exit_reason(0.200, 0.1692, 0.200, 1, r, stop_base=0.188))
+        why = exit_reason(0.200, 0.163, 0.200, 1, r, stop_base=0.188)
+        self.assertIn("stop-loss", why)
+        self.assertIn("since entry", why)
 
 
 if __name__ == "__main__":

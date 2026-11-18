@@ -34,20 +34,30 @@ def size_position(acc: Account, r: RiskConfig, tx_fee_sol: float) -> tuple[float
 
 
 def exit_reason(cost: float, value: float, peak: float, held_min: float, r: RiskConfig,
-                runner: bool = False) -> str | None:
+                runner: bool = False, stop_base: float | None = None) -> str | None:
     """`runner`: profit was already taken in part; the rest rides with a wider trailing stop
     and no time limit while it's in profit (so it can catch a big move)."""
     pnl = (value / cost - 1) * 100 if cost else 0.0
-    if pnl <= -r.stop_loss_pct:
-        return f"stop-loss {pnl:+.1f}% (limit -{r.stop_loss_pct}%)"
+    # stop-loss counts the PRICE move since entry (value right after the buy), not the fixed
+    # round-trip costs (impact, fees, rent) that every position starts with
+    base = stop_base or cost
+    move = (value / base - 1) * 100 if base else pnl
+    if move <= -r.stop_loss_pct:
+        return f"stop-loss {pnl:+.1f}% (price {move:+.1f}% since entry, limit -{r.stop_loss_pct}%)"
     if r.take_profit_pct > 0 and pnl >= r.take_profit_pct:
         return f"take-profit {pnl:+.1f}% (target +{r.take_profit_pct}%)"
     trail = r.runner_trailing_stop_pct if runner else r.trailing_stop_pct
     if peak >= cost * (1 + r.trailing_arm_pct / 100) and value <= peak * (1 - trail / 100):
         return (f"trailing stop {pnl:+.1f}% (peak {(peak / cost - 1) * 100:+.1f}%, "
                 f"-{trail:g}% from peak{', runner' if runner else ''})")
-    if held_min >= r.max_hold_minutes and not (runner and pnl > 0):
-        return f"time exit after {held_min:.0f} min at {pnl:+.1f}%"
+    if held_min >= r.max_hold_minutes:
+        # time limit is for positions that go nowhere or lose; one in profit is not dumped,
+        # it keeps riding until the profit is gone or the trailing stop takes it
+        if pnl <= r.time_exit_keep_pnl_pct:
+            return f"time exit after {held_min:.0f} min at {pnl:+.1f}%"
+        if not runner and value <= peak * (1 - trail / 100):
+            return (f"time exit after {held_min:.0f} min at {pnl:+.1f}% "
+                    f"(-{trail:g}% from peak {(peak / cost - 1) * 100:+.1f}%)")
     return None
 
 

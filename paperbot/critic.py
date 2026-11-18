@@ -67,6 +67,7 @@ class MarketMemory:
         self.clock = clock
         self.liq: dict[str, list[tuple[float, float]]] = {}
         self.symbols: dict[str, dict[str, tuple[float, float]]] = {}  # SYMBOL -> mint -> (ts, liq)
+        self.px: dict[str, list[tuple[float, float]]] = {}              # mint -> [(ts, price in SOL)]
 
     def observe(self, cands: list[TokenCandidate]) -> None:
         now = self.clock()
@@ -75,12 +76,23 @@ class MarketMemory:
             h = [x for x in self.liq.get(c.mint, []) if x[0] >= cut]
             h.append((now, c.liquidity_usd))
             self.liq[c.mint] = h[-60:]
+            if c.price_native:
+                p = [x for x in self.px.get(c.mint, []) if x[0] >= cut]
+                p.append((now, c.price_native))
+                self.px[c.mint] = p[-120:]
             sym = (c.symbol or "").strip().upper()
             if sym:
                 self.symbols.setdefault(sym, {})[c.mint] = (now, c.liquidity_usd)
         if len(self.liq) > 5000:  # forget mints not seen in the window
             self.liq = {m: h for m, h in self.liq.items() if h and h[-1][0] >= cut}
+            self.px = {m: h for m, h in self.px.items() if h and h[-1][0] >= cut}
             self.symbols = {s: {m: v for m, v in d.items() if v[0] >= cut} for s, d in self.symbols.items()}
+
+    def price_range(self, mint: str, minutes: float) -> tuple[float, float, int] | None:
+        """(low, high, samples) of the price we saw for this mint in the last `minutes`."""
+        cut = self.clock() - minutes * 60
+        h = [p for ts, p in self.px.get(mint, []) if ts >= cut]
+        return (min(h), max(h), len(h)) if h else None
 
     def liquidity_drop_pct(self, mint: str, current: float) -> float | None:
         cut = self.clock() - self.window_s

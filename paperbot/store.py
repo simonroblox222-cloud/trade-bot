@@ -63,7 +63,8 @@ class Store:
                 cols = {r[1] for r in self.conn.execute("PRAGMA table_info(positions)")}
                 for col, typ in (("bonding", "INTEGER DEFAULT 0"),           # added with the Critic
                                  ("partial_proceeds_sol", "REAL DEFAULT 0"),  # partial take-profits
-                                 ("tp_level", "INTEGER DEFAULT 0")):
+                                 ("tp_level", "INTEGER DEFAULT 0"),
+                                 ("entry_value_sol", "REAL")):                # first mark after the buy
                     if col not in cols:  # older DBs get the new columns
                         self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {typ}")
                 self.conn.commit()

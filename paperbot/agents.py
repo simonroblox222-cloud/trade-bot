@@ -104,6 +104,18 @@ class Scanner:
             (ratio >= min_ratio, f"buys/sells {ratio:.2f}"),
             (s.allow_bonding_curve or not c.is_bonding_curve, "bonding curve" if c.is_bonding_curve else "amm"),
         ]
+        # anti-spike: never buy the vertical candle itself, and after a spike wait for a pullback
+        checks.append((c.price_change_m5_pct <= s.max_entry_m5_pct, f"spike m5 {c.price_change_m5_pct:+.0f}%"
+                       if c.price_change_m5_pct > s.max_entry_m5_pct else "no spike candle"))
+        rng = self.memory.price_range(c.mint, s.spike_window_minutes) if self.memory and c.price_native else None
+        if rng and rng[2] >= 2 and rng[0] > 0:
+            lo, hi, _ = rng
+            spiked = (hi / lo - 1) * 100 > s.spike_range_pct
+            at_top = c.price_native >= hi * (1 - s.spike_top_pct / 100)
+            checks.append((not (spiked and at_top),
+                           f"spike top: +{(hi / lo - 1) * 100:.0f}% in {s.spike_window_minutes:g}m, waiting for pullback"
+                           if spiked and at_top else
+                           (f"pullback {(1 - c.price_native / hi) * 100:.0f}% from top" if spiked else "calm range")))
         if hot:
             checks.append((True, f"hype {hype:+.1f} (looser momentum)"))
         failed = [txt for ok, txt in checks if not ok]
@@ -135,7 +147,9 @@ class Scanner:
                 for part in why.split(", "):
                     key = {"buys/sells": "buy/sell ratio", "bonding": "bonding curve"}.get(part.split(" ")[0],
                                                                                            part.split(" ")[0])
-                    if key == "h1":
+                    if key == "spike":
+                        key = "spike top (waiting for pullback)" if part.startswith("spike top") else "spike candle"
+                    elif key == "h1":
                         key = "h1 too high" if c.price_change_h1_pct > self.s.max_price_change_h1_pct else "h1 falling"
                     elif key == "age":
                         age = (now - c.pair_created_at_ms / 1000) / 60 if c.pair_created_at_ms else None
@@ -347,12 +361,16 @@ class Executor:
                   f"LP {rep.lp_locked_pct}%, rt {rep.roundtrip_loss_pct}%)"
                   + (f" | {critic}" if critic else ""))
         mark_value = cost  # until first mark
+        # what the tokens would fetch right after the buy if the price didn't move: the
+        # stop-loss is measured from here, so fixed round-trip costs don't trigger it
+        friction = 2 * (fill.price_impact_pct + self.r.extra_slippage_bps / 100) / 100
+        entry_value = max(0.0, size_sol * (1 - friction) - fill.network_fee_sol + fill.rent_sol)
         pid = self.store.insert("positions", mint=c.mint, symbol=c.symbol, source=c.source, status="open",
                                 opened_at=time.time(), size_sol=size_sol, cost_sol=cost,
                                 token_amount=fill.fill_out, decimals=rep.decimals or 0, entry_reason=reason,
                                 peak_value_sol=mark_value, last_value_sol=mark_value, quote_failures=0,
                                 fees_sol=fill.network_fee_sol + fill.slippage_cost_sol,
-                                bonding=int(c.is_bonding_curve))
+                                bonding=int(c.is_bonding_curve), entry_value_sol=entry_value)
         self.store.set("cash", cash - cost)
         self.log.trade(pid, c.mint, c.symbol, fill, reason, fill.fill_out)
         self.log.log("Executor", "trade",
@@ -437,7 +455,8 @@ class Executor:
             # whole position = what's still held + what partial sales already brought in
             whole = fill.net_sol + (pos.get("partial_proceeds_sol") or 0.0)
             why = exit_reason(pos["cost_sol"], whole, pos["peak_value_sol"],
-                              (now - pos["opened_at"]) / 60, self.r, runner=(pos.get("tp_level") or 0) > 0)
+                              (now - pos["opened_at"]) / 60, self.r, runner=(pos.get("tp_level") or 0) > 0,
+                              stop_base=pos.get("entry_value_sol"))
             if why:
                 self.sell(pos, fill, why)
                 continue

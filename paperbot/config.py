@@ -177,6 +177,7 @@ class RiskConfig:
     runner_trailing_stop_pct: float = 20.0  # after the first partial sale: room for a big move
     trailing_arm_pct: float = 10.0        # arm trailing after +X %
     max_hold_minutes: float = 30.0
+    time_exit_keep_pnl_pct: float = 1.0      # past max hold, keep a position only while above this profit
     token_cooldown_minutes: float = 20.0
     max_price_impact_pct: float = 3.0
     # costs
@@ -209,6 +210,11 @@ class StrategyConfig:
     hype_min_price_change_m5_pct: float = 0.0
     hype_min_buy_sell_ratio_m5: float = 1.0
     hype_min_volume_h1_usd: float = 5_000
+    # don't buy the top of a spike (live: 7/7 losses bought right after a +20 % candle)
+    max_entry_m5_pct: float = 10.0        # m5 above this = we'd be buying the spike candle itself
+    spike_window_minutes: float = 10.0    # look at the price range we saw in this window
+    spike_range_pct: float = 15.0         # range wider than this = it just spiked ...
+    spike_top_pct: float = 3.0            # ... then only buy once it is this far below the top (pullback)
     max_candidates_per_tick: int = 5
     allow_bonding_curve: bool = True      # trade pump.fun tokens before graduation
     confirm_cycles: int = 2               # signal must pass this many scans in a row
