@@ -5,8 +5,7 @@ Cudzí kód tu nie je uložený, iba zoznam (`repos.txt`) a skript `fetch.sh`, k
 - prečítaj si `package.json` / `requirements.txt` a hľadaj neznáme závislosti alebo URL, kam sa posielajú dáta,
 - najprv iba paper/simulačný režim.
 
-Rýchly sken (postinstall skripty, hardcoded Telegram boty, obfuskovaný JS, Discord webhooky) nenašiel nič podozrivé,
-nálezy boli falošné poplachy (testovací token v redakcii logov, `prisma generate`). Nie je to plný audit.
+Bezpečnostný audit všetkých repozitárov: [AUDIT.md](AUDIT.md).
 
 ## 1. Oficiálne SDK a infra (najdôveryhodnejšie)
 | Repozitár | Na čo |
