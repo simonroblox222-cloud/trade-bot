@@ -120,7 +120,7 @@ class CriticConfig:
     max_open_bonding_curve: int = 4
     max_open_same_source: int = 6
     losing_streak: int = 3
-    losing_streak_pause_minutes: float = 30.0
+    losing_streak_pause_minutes: float = 10.0
     max_m5_pct: float = 60.0               # chasing a vertical candle
     max_h1_pct: float = 400.0
     max_size_vs_liquidity_pct: float = 2.0
@@ -181,6 +181,7 @@ class RiskConfig:
     max_price_impact_pct: float = 3.0
     # costs
     slippage_bps: int = 300               # sent to Jupiter (tx would fail below threshold)
+    exit_slippage_bps: int = 1500         # stop-loss / trailing exits: sell even if price slips (no revert loop in a dump)
     extra_slippage_bps: int = 100         # pessimistic fill vs. quote (latency, MEV)
     base_fee_sol: float = 0.000005
     priority_fee_sol: float = 0.0001
@@ -222,7 +223,7 @@ class BotConfig:
     min_jupiter_budget_for_entry: float = 4.0  # rug round trip (2) + buy with latency (2)
     # share of the Jupiter rate limit used to re-price open positions; the rest goes to new entries.
     # e.g. 55 rpm * 0.6 = 33 marks/min -> with 5 open positions each is re-priced every ~9 s
-    jupiter_mark_share: float = 0.6
+    jupiter_mark_share: float = 0.75
     db_path: str = "paperbot.sqlite"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787

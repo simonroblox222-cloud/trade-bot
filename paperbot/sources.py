@@ -163,6 +163,22 @@ class MarketDiscovery:
             return []
         return self.pumpportal.mints()[:100]
 
+    def prices(self, mints: list[str]) -> dict[str, float]:
+        """Cheap price watch for open positions: one DexScreener call for up to 30 mints
+        (priceNative = SOL per token). Never blocks; {} when the budget is used up."""
+        if not mints:
+            return {}
+        try:
+            pairs = get_json(self.api.dexscreener_tokens_url.format(mints=",".join(mints[:30])), self.api.timeout_s,
+                             limiter=self.lim_pairs, block=False)
+        except (RateLimited, HttpError):
+            return {}
+        out = {}
+        for c in self._best_pairs(pairs if isinstance(pairs, list) else [], set(mints), {}):
+            if c.price_native:
+                out[c.mint] = c.price_native
+        return out
+
     def candidates(self) -> list[TokenCandidate]:
         self.last_errors = []
         sourced: dict[str, str] = {}

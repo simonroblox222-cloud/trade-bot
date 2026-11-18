@@ -11,6 +11,8 @@ exists only as the seam for a future implementation and refuses to construct.
 """
 from __future__ import annotations
 
+import dataclasses
+
 import time
 from dataclasses import dataclass
 
@@ -100,8 +102,14 @@ class PaperExecution:
         except SourceUnavailable as e:
             return ExecResult(None, f"quote API unavailable: {e}", 0.0)
 
-    def execute_sell(self, mint: str, token_amount: int, first: Fill | None = None) -> ExecResult:
+    def execute_sell(self, mint: str, token_amount: int, first: Fill | None = None,
+                     slippage_bps: int | None = None) -> ExecResult:
+        """`slippage_bps`: wider tolerance for urgent exits (stop-loss in a dump): a real bot
+        would rather sell a bit lower than have the swap revert while the price keeps falling."""
         try:
+            first = first or self.simulate_sell(mint, token_amount)
+            if first is not None and slippage_bps is not None:
+                first = dataclasses.replace(first, min_out=int(first.quote_out * (10_000 - slippage_bps) // 10_000))
             return self._execute_sell(mint, token_amount, first)
         except SourceUnavailable as e:
             return ExecResult(None, f"quote API unavailable: {e}", 0.0)

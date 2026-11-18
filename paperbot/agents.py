@@ -355,7 +355,9 @@ class Executor:
 
     def sell(self, pos: dict, mark: Fill | None, reason: str) -> bool:
         """Exit with simulated latency. A reverted/unroutable sell keeps the position open."""
-        res = self.exe.execute_sell(pos["mint"], pos["token_amount"], mark)
+        urgent = reason.startswith(("stop-loss", "trailing", "daily loss"))
+        res = self.exe.execute_sell(pos["mint"], pos["token_amount"], mark,
+                                    slippage_bps=self.r.exit_slippage_bps if urgent else None)
         if res.fill is None:
             self._fee_lost(res.fee_lost_sol)
             if res.fee_lost_sol:  # the failed attempt still cost this position its fee
@@ -452,12 +454,35 @@ class EquityAgent:
         """How often all open positions can be re-priced within the Jupiter budget share."""
         return open_count * 60.0 / self.mark_rpm if self.mark_rpm else 0.0
 
-    def mark(self) -> dict[int, Fill | None]:
+    def quick_check(self, discovery) -> bool:
+        """Between Jupiter marks, watch DexScreener prices (cheap, 30 tokens per call). If an
+        open position looks like it is dropping fast, ask for a Jupiter mark right now, so the
+        stop-loss reacts in seconds instead of waiting for the next scheduled mark."""
+        prices_fn = getattr(discovery, "prices", None)
+        open_pos = self.store.open_positions()
+        if not open_pos or prices_fn is None:
+            return False
+        prices = prices_fn([p["mint"] for p in open_pos])
+        for p in open_pos:
+            px = prices.get(p["mint"])
+            if not px or p["decimals"] is None or not p["last_value_sol"]:
+                continue
+            est = px * p["token_amount"] / 10 ** p["decimals"]
+            whole = est + (p.get("partial_proceeds_sol") or 0.0)
+            near_stop = whole <= p["cost_sol"] * (1 - self.r.stop_loss_pct * 0.6 / 100)
+            falling = est <= p["last_value_sol"] * 0.95   # -5 % since the last Jupiter mark
+            if near_stop or falling:
+                return True
+        return False
+
+    def mark(self, force: bool = False) -> dict[int, Fill | None]:
         marks: dict[int, Fill | None] = {}
         open_pos = self.store.open_positions()
         now = time.time()
-        if now - self.last_mark < self.mark_interval_s(len(open_pos)):
+        if not force and now - self.last_mark < self.mark_interval_s(len(open_pos)):
             return marks  # not due yet; exits are evaluated on the next mark
+        if force and now - self.last_mark < 3.0:   # forced marks at most every 3 s (Jupiter budget)
+            return marks
         self.last_mark = now
         for pos in open_pos:
             try:
@@ -546,7 +571,8 @@ class Pipeline:
                                 else " (waiting for API limits / slow responses)"))
 
     def _tick(self) -> Account:
-        marks = self.equity.mark()
+        force = self.equity.quick_check(self.scanner.discovery)
+        marks = self.equity.mark(force=force)
         self.executor.manage_exits(marks)
         acc = self.equity.check_day()
         if acc.halted and self.cfg.risk.close_all_on_daily_limit:

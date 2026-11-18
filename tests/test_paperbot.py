@@ -178,6 +178,16 @@ class LatencyTests(unittest.TestCase):
         self.assertLess(res.fill.fill_out, mark.fill_out)
         self.assertEqual(slept, [2.0])
 
+    def test_urgent_exit_fills_in_a_dump_instead_of_reverting(self):
+        exe, _ = self.exe(0.08)                       # price falls 8 % during the latency
+        mark = exe.simulate_sell(MINT, 1_000_000)
+        self.assertIsNone(exe.execute_sell(MINT, 1_000_000, mark).fill)          # normal 3 %: reverts
+        exe, _ = self.exe(0.08)
+        mark = exe.simulate_sell(MINT, 1_000_000)
+        res = exe.execute_sell(MINT, 1_000_000, mark, slippage_bps=1500)        # stop-loss: sells
+        self.assertIsNotNone(res.fill)
+        self.assertLess(res.fill.fill_out, mark.fill_out)
+
     def test_no_latency_no_sleep(self):
         exe, slept = self.exe(0.05, latency=0)
         self.assertIsNotNone(exe.execute_buy(MINT, 1_000_000_000).fill)
@@ -1144,6 +1154,28 @@ class RunnerTests(unittest.TestCase):
         self.assertIsNone(exit_reason(1.0, 2.6, 3.0, 5, r, runner=True))
         self.assertIn("runner", exit_reason(1.0, 2.3, 3.0, 5, r, runner=True))
         self.assertIsNone(exit_reason(1.0, 51.0, 51.0, 5, r, runner=True))   # +5000 %: no take-profit cap
+
+
+class QuickStopTests(unittest.TestCase):
+    def test_dexscreener_drop_triggers_an_immediate_mark(self):
+        from paperbot.agents import EquityAgent, Logger
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig()
+            store = Store(os.path.join(d, "t.sqlite"))
+            eq = EquityAgent(cfg, mock.Mock(), store, Logger(store, echo=False), jupiter_rpm=55)
+            store.insert("positions", mint=MINT, symbol="TOK", source="x", status="open", opened_at=time.time(),
+                         size_sol=1.0, cost_sol=1.0, token_amount=1_000_000_000, decimals=6, entry_reason="t",
+                         peak_value_sol=1.0, last_value_sol=1.0, quote_failures=0, fees_sol=0.0)
+            disc = mock.Mock()
+            disc.prices.return_value = {MINT: 0.001}       # 1000 tokens * 0.001 = 1.0 SOL: steady
+            self.assertFalse(eq.quick_check(disc))
+            disc.prices.return_value = {MINT: 0.00093}     # -7 %
+            self.assertTrue(eq.quick_check(disc))
+            eq.last_mark = time.time()                     # a mark just ran ...
+            self.assertEqual(eq.mark(force=False), {})     # ... normally not due yet
+            eq.last_mark -= 5
+            eq.exe.simulate_sell.return_value = None
+            self.assertIn(1, eq.mark(force=True))          # forced: re-priced now
 
 
 if __name__ == "__main__":
