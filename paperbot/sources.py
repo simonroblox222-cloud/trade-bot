@@ -33,6 +33,7 @@ class DiscoveryProvider(Protocol):
 
 class OnchainProvider(Protocol):
     def mint_info(self, mint: str) -> MintInfo | None: ...
+    def wallet_tx_count(self, owner: str, limit: int = 20) -> int | None: ...
     def largest_holders(self, mint: str) -> list[Holder]: ...
 
 
@@ -89,6 +90,7 @@ class MarketDiscovery:
         self.lim_pumpfun = limits.get("pumpfun")
         self.last_errors: list[str] = []
         self._mints_cache: dict[str, list[str]] = {}
+        self._pf_meta: dict[str, dict] = {}      # pump.fun coin fields we use (numbers / presence only)
 
     def _dexscreener_mints(self) -> list[str]:
         # non-blocking: when the budget is used up we reuse the previous list
@@ -101,13 +103,30 @@ class MarketDiscovery:
         coins = get_json(self.api.pumpfun_coins_url, self.api.timeout_s, limiter=self.lim_pumpfun, block=False)
         if isinstance(coins, dict):
             coins = coins.get("coins") or []
+        for c in coins or []:
+            if c.get("mint"):
+                self._pf_meta[c["mint"]] = {
+                    "replies": int(c.get("reply_count") or 0),
+                    "koth": bool(c.get("king_of_the_hill_timestamp")),
+                    "x": bool(c.get("twitter")), "tg": bool(c.get("telegram")), "web": bool(c.get("website")),
+                    "creator": c.get("creator"),
+                }
+        if len(self._pf_meta) > 5000:
+            self._pf_meta = dict(list(self._pf_meta.items())[-2000:])
         return [c["mint"] for c in coins or [] if c.get("mint")]
+
+    def _boost_mints(self) -> list[str]:
+        boosts = get_json(self.api.dexscreener_boosts_url, self.api.timeout_s,
+                          limiter=self.lim_profiles, block=False)
+        return [b["tokenAddress"] for b in boosts or []
+                if b.get("chainId") == "solana" and b.get("tokenAddress")]
 
     def candidates(self) -> list[TokenCandidate]:
         self.last_errors = []
         sourced: dict[str, str] = {}
         for name, enabled, fn in (("dexscreener", self.api.use_dexscreener, self._dexscreener_mints),
-                                  ("pumpfun", self.api.use_pumpfun, self._pumpfun_mints)):
+                                  ("pumpfun", self.api.use_pumpfun, self._pumpfun_mints),
+                                  ("boosts", self.api.use_boosts, self._boost_mints)):
             if not enabled:
                 continue
             try:
@@ -118,6 +137,7 @@ class MarketDiscovery:
                 self.last_errors.append(f"{name}: {e}")
             for m in self._mints_cache.get(name, []):
                 sourced.setdefault(m, name)
+        boosted = set(self._mints_cache.get("boosts", []))
         mints = list(sourced)[:90]
         out: list[TokenCandidate] = []
         for i in range(0, len(mints), 30):  # endpoint accepts up to 30 addresses
@@ -128,11 +148,16 @@ class MarketDiscovery:
             except HttpError as e:
                 self.last_errors.append(f"dexscreener pairs: {e}")
                 continue
-            out.extend(self._best_pairs(pairs or [], set(batch), sourced))
+            out.extend(self._best_pairs(pairs or [], set(batch), sourced, self._pf_meta))
+        for c in out:  # listed in the paid boosts feed = boosted, even if the pair doesn't say so
+            if c.mint in boosted and not c.boosts_active:
+                c.boosts_active = 1
         return out
 
     @staticmethod
-    def _best_pairs(pairs: list[dict], wanted: set[str], sourced: dict[str, str]) -> list[TokenCandidate]:
+    def _best_pairs(pairs: list[dict], wanted: set[str], sourced: dict[str, str],
+                    pf_meta: dict[str, dict] | None = None) -> list[TokenCandidate]:
+        pf_meta = pf_meta or {}
         best: dict[str, dict] = {}
         for p in pairs:
             base = (p.get("baseToken") or {}).get("address")
@@ -146,6 +171,9 @@ class MarketDiscovery:
         for mint, p in best.items():
             tx = (p.get("txns") or {}).get("m5") or {}
             pc = p.get("priceChange") or {}
+            info = p.get("info") or {}
+            social_types = {(s.get("type") or s.get("platform") or "").lower() for s in info.get("socials") or []}
+            pf = pf_meta.get(mint, {})
             out.append(TokenCandidate(
                 mint=mint, symbol=(p.get("baseToken") or {}).get("symbol", "?"),
                 liquidity_usd=float((p.get("liquidity") or {}).get("usd") or 0),
@@ -156,6 +184,12 @@ class MarketDiscovery:
                 price_usd=float(p["priceUsd"]) if p.get("priceUsd") else None,
                 fdv_usd=p.get("fdv"), pair_address=p.get("pairAddress"), dex=p.get("dexId"),
                 source=sourced.get(mint, "dexscreener"), is_bonding_curve=p.get("dexId") == "pumpfun",
+                price_native=float(p["priceNative"]) if p.get("priceNative") else None,
+                has_x=bool({"twitter", "x"} & social_types) or pf.get("x", False),
+                has_telegram="telegram" in social_types or pf.get("tg", False),
+                has_website=bool(info.get("websites")) or pf.get("web", False),
+                boosts_active=int((p.get("boosts") or {}).get("active") or 0),
+                pf_replies=pf.get("replies"), pf_koth=pf.get("koth", False), creator=pf.get("creator"),
             ))
         return out
 
@@ -195,6 +229,14 @@ class SolanaRpc:
             token_program=data.get("program", "spl-token"), extensions=exts,
         )
 
+    def wallet_tx_count(self, owner: str, limit: int = 20) -> int | None:
+        """How many transactions a wallet has (capped at `limit`): few = freshly created wallet."""
+        try:
+            res = self._call("getSignaturesForAddress", [owner, {"limit": limit}])
+        except HttpError:
+            return None
+        return len(res or [])
+
     def largest_holders(self, mint: str) -> list[Holder]:
         try:
             res = self._call("getTokenLargestAccounts", [mint])
@@ -225,6 +267,30 @@ class RugCheckApi:
             return get_json(self.api.rugcheck_url.format(mint=mint), self.api.timeout_s, limiter=self.limiter)
         except HttpError:
             return None
+
+    def report(self, mint: str) -> dict | None:
+        """Full report (insiders, creator, holders, markets). Field names follow the public
+        RugCheck API as known in Nov 2026; every field is read defensively."""
+        try:
+            return get_json(self.api.rugcheck_report_url.format(mint=mint), self.api.timeout_s, limiter=self.limiter)
+        except HttpError:
+            return None
+
+
+class PumpFunApi:
+    def __init__(self, api: ApiConfig, limits: Limits | None = None):
+        self.api = api
+        self.limiter = (limits or Limits()).get("pumpfun")
+
+    def creator_coins(self, creator: str) -> list[dict] | None:
+        try:
+            data = get_json(self.api.pumpfun_creator_coins_url.format(creator=creator), self.api.timeout_s,
+                            limiter=self.limiter)
+        except HttpError:
+            return None
+        if isinstance(data, dict):
+            data = data.get("coins")
+        return data if isinstance(data, list) else None
 
 
 class TTLCache:

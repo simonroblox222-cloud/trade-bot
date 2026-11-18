@@ -24,7 +24,7 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 .right{margin-left:auto}
 @keyframes blink{50%{opacity:.35}}
 .panel{background:var(--panel);border:1px solid var(--line);padding:10px 12px;min-width:0}
-.pipe{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}
+.pipe{display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px}
 .agent{position:relative;border:1px solid var(--line);background:var(--panel);padding:8px 10px;min-width:0}
 .agent:not(:last-child):after{content:"→";position:absolute;right:-9px;top:50%;transform:translateY(-50%);color:var(--dim);z-index:1}
 .agent .nm{color:var(--hi);font-weight:700}
@@ -63,7 +63,7 @@ td.nw{white-space:nowrap}
 .empty{color:var(--dim);padding:10px 0}
 .sec{margin-bottom:12px}
 a{color:var(--cyan)}
-@media (max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.pipe{grid-template-columns:repeat(3,1fr)}.agent:nth-child(3):after{display:none}}
+@media (max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.pipe{grid-template-columns:repeat(4,1fr)}.agent:nth-child(4n):after{display:none}}
 @media (max-width:760px){.grid2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.pipe{grid-template-columns:repeat(2,1fr)}.agent:after{display:none}.right{margin-left:0}}
 </style>
 </head>
@@ -92,6 +92,7 @@ a{color:var(--cyan)}
   <div class="panel"><h2>Uzavreté pozície</h2><div class="tbl" id="closed"></div></div>
   <div class="panel"><h2>Rug check</h2><div class="tbl" id="rug"></div></div>
 </div>
+<div class="panel sec"><h2>Critic pred nákupom <span class="muted" id="criticn"></span></h2><div class="tbl" id="critic"></div></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -228,6 +229,17 @@ function render(s) {
     ["", r => `<td class="${r.passed ? "pos" : "neg"}"><b>${r.passed ? "PASS" : "FAIL"}</b></td>`],
     ["Detail", r => `<td class="why">${esc((r.passed ? r.warnings : r.reasons).join("; ") || `top10 ${f(r.top10_pct,1)}%, LP ${f(r.lp_locked_pct,0)}%, rt ${f(r.roundtrip_loss_pct,1)}%`)}</td>`],
   ], "zatiaľ žiadne kontroly");
+
+  const cc = s.critic_counts || {approved: 0, rejected: 0};
+  $("criticn").innerHTML = `· <span class="pos">${cc.approved} schválené</span> / <span class="neg">${cc.rejected} zamietnuté</span>`;
+  $("critic").innerHTML = table(s.critic || [], [
+    ["Čas", r => `<td>${t(r.ts)}</td>`],
+    ["Token", r => `<td class="nw"><b>${esc(r.symbol)}</b> ${dex(r.mint)}<div class="muted">${esc(r.source)}</div></td>`],
+    ["", r => `<td class="${r.approved ? "pos" : "neg"}"><b>${r.approved ? "OK" : "STOP"}</b></td>`],
+    ["Veľkosť ◎", r => `<td class="n">${f(r.size_sol, 3)}</td>`],
+    ["Social", r => `<td class="n">${r.social_score == null ? "–" : sg(r.social_score, 1)}</td>`],
+    ["Dôvod", r => `<td class="why">${esc((r.approved ? r.notes : r.reasons).join("; ") || "bez výhrad")}</td>`],
+  ], "Critic zatiaľ nič neposudzoval");
 }
 
 async function poll() {

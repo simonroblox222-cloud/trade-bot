@@ -31,8 +31,18 @@ class TokenCandidate:
     fdv_usd: float | None = None
     pair_address: str | None = None
     dex: str | None = None
-    source: str = "dexscreener"          # dexscreener | pumpfun | mock
+    source: str = "dexscreener"          # dexscreener | pumpfun | boosts | mock
     is_bonding_curve: bool = False       # pump.fun curve, not yet graduated
+    price_native: float | None = None    # price in SOL (to convert SOL sizes to USD)
+    # social / hype signals (counts and presence only: no text is ever interpreted)
+    has_x: bool = False
+    has_telegram: bool = False
+    has_website: bool = False
+    boosts_active: int = 0               # DexScreener paid boosts
+    pf_replies: int | None = None        # pump.fun comment count
+    pf_koth: bool = False                # reached pump.fun "king of the hill"
+    creator: str | None = None           # dev wallet (pump.fun)
+    social_score: float | None = None
 
 
 @dataclass
@@ -60,6 +70,7 @@ class RugReport:
     warnings: list[str] = field(default_factory=list)
     rugcheck_score: float | None = None
     decimals: int | None = None
+    supply: int | None = None
     top10_pct: float | None = None
     lp_locked_pct: float | None = None
     roundtrip_loss_pct: float | None = None

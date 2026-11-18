@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS equity (ts REAL, cash REAL, positions_value REAL, equ
 CREATE TABLE IF NOT EXISTS events (ts REAL, agent TEXT, level TEXT, mint TEXT, message TEXT);
 CREATE TABLE IF NOT EXISTS rugchecks (ts REAL, mint TEXT, symbol TEXT, source TEXT, passed INTEGER,
   score REAL, top10_pct REAL, lp_locked_pct REAL, roundtrip_loss_pct REAL, reasons TEXT, warnings TEXT);
+-- every Critic decision before a buy: approved or rejected, with reasons
+CREATE TABLE IF NOT EXISTS critic (ts REAL, mint TEXT, symbol TEXT, source TEXT, approved INTEGER,
+  size_sol REAL, social_score REAL, reasons TEXT, notes TEXT);
 CREATE INDEX IF NOT EXISTS idx_trades_ts ON trades(ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
@@ -57,6 +60,9 @@ class Store:
             with self.lock:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
+                cols = {r[1] for r in self.conn.execute("PRAGMA table_info(positions)")}
+                if "bonding" not in cols:  # added with the Critic; older DBs get the column
+                    self.conn.execute("ALTER TABLE positions ADD COLUMN bonding INTEGER DEFAULT 0")
                 self.conn.commit()
 
     def _rows(self, sql: str, args: tuple = ()) -> list[dict]:
@@ -123,6 +129,22 @@ class Store:
             time.time(), rep.mint, cand.symbol, cand.source, int(rep.passed), rep.rugcheck_score,
             rep.top10_pct, rep.lp_locked_pct, rep.roundtrip_loss_pct,
             json.dumps(rep.reasons), json.dumps(rep.warnings)))
+
+    def record_critic(self, cand, approved: bool, size_sol: float, reasons: list[str], notes: list[str]) -> None:
+        self._exec("INSERT INTO critic VALUES (?,?,?,?,?,?,?,?,?)", (
+            time.time(), cand.mint, cand.symbol, cand.source, int(approved), size_sol, cand.social_score,
+            json.dumps(reasons), json.dumps(notes)))
+
+    def critic(self, limit: int = 60) -> list[dict]:
+        out = self._rows("SELECT * FROM critic ORDER BY ts DESC LIMIT ?", (limit,))
+        for d in out:
+            d["reasons"] = json.loads(d["reasons"])
+            d["notes"] = json.loads(d["notes"])
+        return out
+
+    def critic_counts(self) -> dict:
+        r = self._rows("SELECT COUNT(*) n, COALESCE(SUM(approved),0) ok FROM critic")[0]
+        return {"approved": int(r["ok"]), "rejected": int(r["n"] - r["ok"])}
 
     def rugchecks(self, limit: int = 60) -> list[dict]:
         out = self._rows("SELECT * FROM rugchecks ORDER BY ts DESC LIMIT ?", (limit,))

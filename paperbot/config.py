@@ -29,8 +29,14 @@ class ApiConfig:
     # unofficial pump.fun frontend API (newest coins); may be rate limited / change without notice
     pumpfun_coins_url: str = ("https://frontend-api-v3.pump.fun/coins?offset=0&limit=50"
                               "&sort=created_timestamp&order=DESC&includeNsfw=false")
+    dexscreener_boosts_url: str = "https://api.dexscreener.com/token-boosts/latest/v1"
+    rugcheck_report_url: str = "https://api.rugcheck.xyz/v1/tokens/{mint}/report"
+    # unofficial: coins created by a wallet (dev history). Unverified endpoint, failures only add a note.
+    pumpfun_creator_coins_url: str = ("https://frontend-api-v3.pump.fun/coins/user-created-coins/{creator}"
+                                      "?offset=0&limit=50&includeNsfw=true")
     use_dexscreener: bool = True
     use_pumpfun: bool = True
+    use_boosts: bool = True             # boosted tokens as a discovery source (flagged as paid hype)
     timeout_s: float = 10.0
 
 
@@ -45,6 +51,60 @@ class RateLimitConfig:
     pumpfun: float = 20               # unofficial API, be gentle
     rugcheck: float = 20              # no published limit for keyless use
     rpc: float = 90                   # public mainnet-beta is strict, esp. getTokenLargestAccounts
+
+
+@dataclass
+class SocialConfig:
+    """Hype proxies without the X API: links, pump.fun comments, king of the hill.
+    Paid DexScreener boosts count AGAINST a token."""
+    enabled: bool = True
+    min_score: float = 1.0
+    x_link: float = 1.0
+    telegram_link: float = 0.5
+    website: float = 0.5
+    replies_some: int = 20            # pump.fun comments for +1
+    replies_many: int = 100           # ... for +2
+    king_of_the_hill: float = 1.0
+    boost_penalty: float = 1.0
+
+
+@dataclass
+class CriticConfig:
+    """Last anti-rug gate before the Executor. Rules only, never changes parameters."""
+    enabled: bool = True
+    # RugCheck full report
+    use_full_report: bool = True
+    max_insider_pct: float = 10.0          # % of supply held by flagged insiders
+    max_insider_networks: int = 0          # connected wallet clusters (bundles)
+    max_creator_pct: float = 5.0           # dev still holds more -> dump risk
+    min_total_holders: int = 100
+    # dev wallet history (pump.fun)
+    check_dev_history: bool = True
+    max_dev_coins: int = 10                # serial launcher
+    max_dev_dead_share: float = 0.8        # share of dev's earlier coins that died (>= 5 coins)
+    dead_coin_mcap_usd: float = 10_000
+    # fresh wallets among top holders
+    check_fresh_wallets: bool = True
+    fresh_wallet_top_n: int = 8
+    fresh_wallet_max_txs: int = 5          # wallet with <= this many txs is "fresh"
+    max_fresh_wallets: int = 2
+    max_fresh_wallets_pct: float = 8.0
+    # liquidity pulls and fake hype
+    max_liquidity_drop_pct: float = 25.0   # vs max seen in the last window
+    liquidity_window_minutes: float = 15.0
+    max_replies_per_minute: float = 5.0    # pump.fun comments / minute of age
+    max_volume_to_liquidity_h1: float = 15.0
+    # behaviour
+    reject_copycat_symbol: bool = True
+    max_open_bonding_curve: int = 2
+    max_open_same_source: int = 3
+    losing_streak: int = 3
+    losing_streak_pause_minutes: float = 30.0
+    max_m5_pct: float = 30.0               # chasing a vertical candle
+    max_h1_pct: float = 150.0
+    max_size_vs_liquidity_pct: float = 2.0
+    max_roundtrip_share: float = 0.6       # rug-check round trip loss vs its limit
+    paid_hype_min_replies: int = 20        # boosted tokens need this much organic chatter or an X link
 
 
 @dataclass
@@ -133,6 +193,8 @@ class BotConfig:
     dashboard_port: int = 8787
     api: ApiConfig = field(default_factory=ApiConfig)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
+    social: SocialConfig = field(default_factory=SocialConfig)
+    critic: CriticConfig = field(default_factory=CriticConfig)
     rug: RugConfig = field(default_factory=RugConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)

@@ -441,7 +441,7 @@ class SourceParseTests(unittest.TestCase):
         with mock.patch.object(sources, "get_json", side_effect=sources.HttpError("403")):
             d = sources.MarketDiscovery(C.ApiConfig())
             self.assertEqual(d.candidates(), [])
-            self.assertEqual(len(d.last_errors), 2)
+            self.assertEqual(len(d.last_errors), 3)  # dexscreener, pumpfun, boosts
 
     def test_rpc_mint_parse(self):
         res = {"result": {"value": {"data": {"program": "spl-token-2022", "parsed": {"type": "mint", "info": {
@@ -595,6 +595,186 @@ class BudgetTests(unittest.TestCase):
             self.assertEqual(store.trades(), [])
             self.assertEqual(store.rugchecks(), [])
             self.assertIn("deferred", store.get("agent:RugCheck")["summary"])
+
+
+# ------------------------------------------------------------ social + critic
+from paperbot.critic import Critic, MarketMemory, social_score  # noqa: E402
+from paperbot.models import RugReport  # noqa: E402
+
+
+class SocialTests(unittest.TestCase):
+    def test_score_counts_links_comments_koth_and_penalises_boosts(self):
+        cfg = C.SocialConfig()
+        s, parts = social_score(cand(has_x=True, has_telegram=True, pf_replies=150, pf_koth=True), cfg)
+        self.assertEqual(s, 1 + 0.5 + 2 + 1)
+        self.assertIn("KOTH", parts)
+        s2, parts2 = social_score(cand(has_x=True, boosts_active=10), cfg)
+        self.assertEqual(s2, 0.0)
+        self.assertTrue(any("boosted" in p for p in parts2))
+        self.assertEqual(social_score(cand(), cfg)[0], 0.0)
+
+    def test_dexscreener_socials_and_pumpfun_meta_parsed(self):
+        pair = {"chainId": "solana", "baseToken": {"address": MINT, "symbol": "TOK"},
+                "quoteToken": {"address": C.SOL_MINT, "symbol": "SOL"}, "liquidity": {"usd": 50_000}, "dexId": "raydium",
+                "priceUsd": "0.0015", "priceNative": "0.00001", "boosts": {"active": 2},
+                "info": {"socials": [{"type": "twitter", "url": "x"}, {"type": "telegram", "url": "t"}],
+                         "websites": [{"url": "w"}]}}
+        meta = {MINT: {"replies": 42, "koth": True, "x": False, "tg": False, "web": False, "creator": "DEV"}}
+        c = sources.MarketDiscovery._best_pairs([pair], {MINT}, {MINT: "pumpfun"}, meta)[0]
+        self.assertEqual((c.has_x, c.has_telegram, c.has_website, c.boosts_active), (True, True, True, 2))
+        self.assertEqual((c.pf_replies, c.pf_koth, c.creator, c.price_native), (42, True, "DEV", 0.00001))
+
+    def test_social_agent_filters_quiet_tokens(self):
+        from paperbot.agents import Logger, Social
+        with tempfile.TemporaryDirectory() as d:
+            sa = Social(C.BotConfig(), Logger(Store(os.path.join(d, "t.sqlite")), echo=False))
+            loud, quiet = cand(has_x=True), cand(mint="Q" * 43)
+            out = sa.run([(loud, "sig"), (quiet, "sig")])
+        self.assertEqual([c.mint for c, _ in out], [MINT])
+        self.assertIn("social +1.0", out[0][1])
+
+
+class FakeReport:
+    def __init__(self, rep):
+        self.rep = rep
+
+    def report(self, m):
+        return self.rep
+
+
+class FakePump:
+    def __init__(self, coins):
+        self.coins = coins
+
+    def creator_coins(self, c):
+        return self.coins
+
+
+class FakeWallets(FakeChain):
+    def __init__(self, tx_counts):
+        super().__init__(holders=[Holder(f"w{i}", f"a{i}", 20_000) for i in range(8)])
+        self.tx = tx_counts
+
+    def wallet_tx_count(self, owner, limit=20):
+        return self.tx.get(owner, 100)
+
+
+def rugrep(**kw):
+    base = dict(mint=MINT, passed=True, supply=1_000_000, roundtrip_loss_pct=2.0)
+    base.update(kw)
+    return RugReport(**base)
+
+
+class CriticTests(unittest.TestCase):
+    def critic(self, **kw):
+        cfg = C.BotConfig()
+        return Critic(cfg.critic, cfg.rug, kw.pop("memory", MarketMemory()), **kw)
+
+    def test_clean_trade_approved_missing_data_only_notes(self):
+        v = self.critic().review(cand(), rugrep(), 0.2, [], [])
+        self.assertTrue(v.approved, v.reasons)
+        self.assertTrue(any("SOL price" in n for n in v.notes))
+        v = self.critic(rug_api=FakeReport(None), pumpfun=FakePump(None)).review(
+            cand(creator="DEV"), rugrep(), 0.2, [], [])
+        self.assertTrue(v.approved)
+        self.assertIn("RugCheck report unavailable", v.notes)
+
+    def test_insiders_bundles_and_dev_balance_rejected(self):
+        rep = {"rugged": False, "creatorBalance": 90_000, "token": {"supply": 1_000_000}, "totalHolders": 50,
+               "topHolders": [{"pct": 6, "insider": True}, {"pct": 6, "insider": True}],
+               "insiderNetworks": [{"size": 12}]}
+        v = self.critic(rug_api=FakeReport(rep)).review(cand(), rugrep(), 0.2, [], [])
+        self.assertFalse(v.approved)
+        self.assertTrue(v.hard)
+        txt = "; ".join(v.reasons)
+        for part in ("insiders hold 12.0%", "insider network", "dev still holds 9.0%", "only 50 holders"):
+            self.assertIn(part, txt)
+        self.assertFalse(self.critic(rug_api=FakeReport({"rugged": True})).review(cand(), rugrep(), 0.2, [], []).approved)
+
+    def test_dev_history(self):
+        serial = [{"mint": f"m{i}", "usd_market_cap": 99_999, "complete": False} for i in range(20)]
+        dead = [{"mint": f"m{i}", "usd_market_cap": 500, "complete": False} for i in range(6)]
+        ok = [{"mint": "m0", "complete": True, "usd_market_cap": 1e6}]
+        r = lambda coins: self.critic(pumpfun=FakePump(coins)).review(cand(creator="DEV"), rugrep(), 0.2, [], [])
+        self.assertIn("serial launcher", "; ".join(r(serial).reasons))
+        self.assertIn("6/6 earlier coins died", "; ".join(r(dead).reasons))
+        self.assertTrue(r(ok).approved)
+
+    def test_fresh_wallets_among_top_holders(self):
+        fresh = FakeWallets({"w0": 1, "w1": 0, "w2": 3})
+        v = self.critic(onchain=fresh).review(cand(), rugrep(), 0.2, [], [])
+        self.assertFalse(v.approved)
+        self.assertIn("3/8 top holders are fresh", v.reasons[0])
+        self.assertTrue(self.critic(onchain=FakeWallets({"w0": 1})).review(cand(), rugrep(), 0.2, [], []).approved)
+
+    def test_liquidity_pull_between_scans(self):
+        clock = FakeClock()
+        mem = MarketMemory(900, clock=clock)
+        mem.observe([cand(liquidity_usd=100_000)])
+        clock.t += 60
+        mem.observe([cand(liquidity_usd=60_000)])
+        v = self.critic(memory=mem).review(cand(liquidity_usd=60_000), rugrep(), 0.2, [], [])
+        self.assertIn("liquidity left the pool: -40%", v.reasons[0])
+
+    def test_fast_and_paid_hype(self):
+        now_ms = int(time.time() * 1000)
+        bots = cand(pf_replies=3000, pair_created_at_ms=now_ms - 60 * 60_000)
+        self.assertIn("hype too fast", self.critic().review(bots, rugrep(), 0.2, [], []).reasons[0])
+        wash = cand(volume_h1_usd=3_000_000, liquidity_usd=100_000)
+        self.assertIn("wash trading", self.critic().review(wash, rugrep(), 0.2, [], []).reasons[0])
+        paid = cand(boosts_active=10, pf_replies=2)
+        self.assertIn("paid boost", self.critic().review(paid, rugrep(), 0.2, [], []).reasons[0])
+        self.assertTrue(self.critic().review(cand(boosts_active=10, has_x=True), rugrep(), 0.2, [], []).approved)
+
+    def test_copycat_symbol(self):
+        mem = MarketMemory()
+        mem.observe([cand(mint="ORIG" + "1" * 39, symbol="tok", liquidity_usd=500_000)])
+        v = self.critic(memory=mem).review(cand(), rugrep(), 0.2, [], [])
+        self.assertIn("copycat", v.reasons[0])
+        held = [{"mint": "OTHER", "symbol": "TOK", "source": "x"}]
+        self.assertIn("copycat", self.critic().review(cand(), rugrep(), 0.2, held, []).reasons[0])
+
+    def test_discipline_rules_are_soft(self):
+        now = time.time()
+        losses = [{"pnl_sol": -0.01, "closed_at": now - 60}] * 3
+        v = self.critic().review(cand(), rugrep(), 0.2, [], losses)
+        self.assertIn("3 losses in a row", v.reasons[0])
+        self.assertFalse(v.hard)
+        self.assertTrue(self.critic().review(cand(), rugrep(), 0.2, [], [{"pnl_sol": -0.01, "closed_at": now - 7200}] * 3).approved)
+        self.assertIn("chasing", self.critic().review(cand(price_change_m5_pct=45), rugrep(), 0.2, [], []).reasons[0])
+        bc = [{"mint": f"b{i}", "symbol": f"B{i}", "source": "pumpfun", "bonding": 1} for i in range(2)]
+        self.assertIn("bonding-curve", self.critic().review(cand(is_bonding_curve=True, source="dexscreener"),
+                                                            rugrep(), 0.2, bc, []).reasons[0])
+        big = cand(price_usd=150.0, price_native=1.0, liquidity_usd=10_000)  # 1 SOL = $150 = 1.5% of pool
+        self.assertTrue(self.critic().review(big, rugrep(), 1.0, [], []).approved)
+        self.assertIn("of pool liquidity", self.critic().review(big, rugrep(), 2.0, [], []).reasons[0])
+        self.assertIn("of its limit", self.critic().review(cand(), rugrep(roundtrip_loss_pct=6.0), 0.2, [], []).reasons[0])
+
+    def test_rejects_stop_trade_before_executor_and_are_stored(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
+            store = Store(cfg.db_path)
+            world = MockWorld(seed=5)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
+            checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
+            mem = MarketMemory()
+            crit = Critic(cfg.critic, cfg.rug, mem, rug_api=world, pumpfun=world, onchain=world)
+            pipe = Pipeline(cfg, world, checker, exe, store, echo=False, critic=crit)
+            for _ in range(250):
+                world.step()
+                pipe.tick()
+            decisions = store.critic(10_000)
+            self.assertTrue(any(not r["approved"] for r in decisions))
+            self.assertTrue(any(r["approved"] for r in decisions))
+            self.assertTrue(all(r["reasons"] for r in decisions if not r["approved"]))
+            bought = {p["mint"] for p in store._rows("SELECT mint FROM positions")}
+            approved = {r["mint"] for r in decisions if r["approved"]}
+            self.assertLessEqual(bought, approved)   # nothing is bought without the Critic's OK
+            kinds = {world.tokens[m].kind for m in bought}
+            self.assertFalse(kinds & {"insider", "serial_dev", "fresh_wallets"})
+            st = build_state(store)
+            self.assertEqual([a["name"] for a in st["agents"]][4], "Critic")
+            self.assertEqual(sum(st["critic_counts"].values()), len(decisions))
 
 
 if __name__ == "__main__":

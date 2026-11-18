@@ -55,6 +55,8 @@ def build_state(store: Store) -> dict:
         "trades": store.trades(150),
         "events": store.events(150),
         "rugchecks": store.rugchecks(40),
+        "critic": store.critic(40),
+        "critic_counts": store.critic_counts(),
         "equity_curve": [{"ts": e["ts"], "equity": e["equity"]} for e in store.equity_curve(3000)],
     }
 

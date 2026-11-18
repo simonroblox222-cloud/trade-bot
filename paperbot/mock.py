@@ -3,7 +3,9 @@
 Implements the same provider interfaces as the real sources, with constant-product
 pools so quotes have realistic price impact. A share of tokens are scams:
 mint/freeze authority, concentrated holders, unlocked LP, honeypot (no sell route),
-sell tax and delayed rug pulls (liquidity removed after entry).
+sell tax and delayed rug pulls (liquidity removed after entry). Scams the RugCheck agent
+can't see are left for the Critic: insider bundles, serial-launcher devs, fresh-wallet
+holders, bot-driven hype, paid boosts and copycat symbols.
 """
 from __future__ import annotations
 
@@ -17,7 +19,9 @@ from .models import Holder, MintInfo, Quote, TokenCandidate
 SOL_USD = 150.0
 LP_FEE = 0.0025
 KINDS = ["good", "good", "good", "neutral", "neutral", "dump", "rug_later", "honeypot",
-         "mint_auth", "freeze_auth", "whale", "lp_unlocked", "tax"]
+         "mint_auth", "freeze_auth", "whale", "lp_unlocked", "tax",
+         "insider", "serial_dev", "fresh_wallets", "fake_hype", "copycat"]
+CRITIC_KINDS = {"insider", "serial_dev", "fresh_wallets", "fake_hype", "copycat"}
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
@@ -34,6 +38,13 @@ class MockToken:
     drift: float = 0.0
     bonding: bool = False
     rug_at: int | None = None
+    creator: str = ""
+    has_x: bool = False
+    has_tg: bool = False
+    has_web: bool = False
+    boosts: int = 0
+    replies: int = 0
+    koth: bool = False
     history: list[float] = field(default_factory=list)   # price per tick
     vol_hist: list[float] = field(default_factory=list)  # USD volume per tick
 
@@ -48,6 +59,7 @@ class MockWorld:
         self.tokens: dict[str, MockToken] = {}
         self.t = 0
         self.spawn_per_tick = spawn_per_tick
+        self.owner_kind: dict[str, str] = {}
         for _ in range(6):
             self._spawn()
 
@@ -56,11 +68,21 @@ class MockWorld:
         r = self.rng
         mint = "".join(r.choice(ALPHABET) for _ in range(43)) + "pump"[: r.choice([0, 4])]
         kind = r.choice(KINDS)
+        symbol = "".join(r.choice("ABCDEFGHIJKLMNOPRSTUVWXYZ") for _ in range(r.randint(3, 6)))
+        if kind == "copycat" and self.tokens:
+            symbol = r.choice(list(self.tokens.values())).symbol   # same ticker, new mint
+        organic = kind in ("good", "neutral", "dump") or r.random() < 0.6
         sol = r.uniform(80, 600) * LAMPORTS_PER_SOL
         tok = r.uniform(0.3, 0.8) * 1e15
         tk = MockToken(
-            mint=mint, symbol="".join(r.choice("ABCDEFGHIJKLMNOPRSTUVWXYZ") for _ in range(r.randint(3, 6))),
+            mint=mint, symbol=symbol,
             kind=kind, sol_res=sol, tok_res=tok,
+            creator=("devSERIAL" + str(r.randint(1, 3))) if kind == "serial_dev" or (kind == "rug_later" and r.random() < 0.5)
+            else "dev" + mint[:8],
+            has_x=(organic and r.random() < 0.85) and kind != "fake_hype", has_tg=r.random() < 0.5,
+            has_web=r.random() < 0.4, boosts=r.choice([0, 0, 0, 10]) if kind != "fake_hype" else 30,
+            replies=r.randint(0, 150) if kind != "fake_hype" else r.randint(4000, 9000),
+            koth=r.random() < 0.3,
             created_ms=int((time.time() - r.uniform(40 * 60, 20 * 3600)) * 1000),
             drift={"good": 0.006, "neutral": -0.002, "dump": -0.012}.get(kind, r.uniform(-0.006, 0.008)),
             bonding=mint.endswith("pump") and r.random() < 0.5,
@@ -75,6 +97,8 @@ class MockWorld:
         tk.history = hist
         tk.vol_hist = [r.uniform(500, 3000) for _ in range(60)]
         self._set_price(tk, hist[-1])
+        if kind == "copycat" and self.tokens:  # copy is smaller than the original
+            tk.sol_res *= 0.5
         self.tokens[mint] = tk
 
     @staticmethod
@@ -110,7 +134,13 @@ class MockWorld:
             up = m5 > 0
             buys = self.rng.randint(20, 80) if up else self.rng.randint(5, 40)
             sells = self.rng.randint(5, 35) if up else self.rng.randint(20, 80)
+            price_native = tk.price * 10**tk.decimals / LAMPORTS_PER_SOL
+            bonding = tk.mint.endswith("pump")
             out.append(TokenCandidate(
+                price_native=price_native, price_usd=price_native * SOL_USD,
+                has_x=tk.has_x, has_telegram=tk.has_tg, has_website=tk.has_web, boosts_active=tk.boosts,
+                pf_replies=tk.replies if bonding else None, pf_koth=tk.koth and bonding,
+                creator=tk.creator if bonding else None,
                 mint=tk.mint, symbol=tk.symbol, liquidity_usd=2 * tk.sol_res / LAMPORTS_PER_SOL * SOL_USD,
                 volume_h1_usd=sum(tk.vol_hist[-60:]) * 3, price_change_m5_pct=m5, price_change_h1_pct=h1,
                 buys_m5=buys, sells_m5=sells, pair_created_at_ms=tk.created_ms,
@@ -153,8 +183,35 @@ class MockWorld:
         if tk.bonding:
             pool = Holder("GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL", "curve", int(tk.supply * 0.6))  # a PDA
         big = 0.25 if tk.kind == "whale" else 0.03
-        hs = [Holder(f"w{i}", f"a{i}", int(tk.supply * (big if i == 0 else 0.012))) for i in range(12)]
+        hs = [Holder(f"{mint[:6]}w{i}", f"a{i}", int(tk.supply * (big if i == 0 else 0.012))) for i in range(12)]
+        for h in hs:
+            self.owner_kind[h.owner] = tk.kind
         return [pool, *hs]
+
+    # Critic data ---------------------------------------------------------
+    def wallet_tx_count(self, owner: str, limit: int = 20) -> int | None:
+        kind = self.owner_kind.get(owner)
+        if kind == "fresh_wallets" and int(owner[-1]) < 6:
+            return 1
+        return min(limit, 3 + sum(map(ord, owner)) % 400)
+
+    def report(self, mint: str) -> dict | None:
+        tk = self.tokens.get(mint)
+        if tk is None:
+            return None
+        ins = tk.kind == "insider"
+        return {
+            "rugged": False, "creator": tk.creator, "totalHolders": 80 if ins else 400 + len(tk.history) * 7,
+            "token": {"supply": tk.supply, "decimals": tk.decimals},
+            "creatorBalance": int(tk.supply * (0.09 if ins else 0.0)),
+            "topHolders": [{"address": f"h{i}", "pct": 3.0, "insider": ins and i < 6} for i in range(10)],
+            "insiderNetworks": [{"id": "n1", "size": 14, "type": "transfer"}] if ins else [],
+        }
+
+    def creator_coins(self, creator: str) -> list[dict] | None:
+        if creator.startswith("devSERIAL"):
+            return [{"mint": f"old{i}", "complete": False, "usd_market_cap": 3000} for i in range(30)]
+        return [{"mint": "first", "complete": True, "usd_market_cap": 90_000}]
 
     def summary(self, mint: str) -> dict | None:
         tk = self.tokens.get(mint)

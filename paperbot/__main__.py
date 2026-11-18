@@ -13,6 +13,7 @@ import time
 
 from .agents import Pipeline
 from .config import load_config
+from .critic import Critic, MarketMemory
 from .dashboard import serve
 from dataclasses import asdict
 
@@ -27,17 +28,21 @@ def build(cfg, mock: bool, seed: int):
     if mock:
         from .mock import MockWorld
         world = MockWorld(seed=seed)
-        discovery = quotes = onchain = rug_api = world
+        discovery = quotes = onchain = rug_api = pumpfun = world
     else:
-        from .sources import JupiterQuotes, MarketDiscovery, RugCheckApi, SolanaRpc
+        from .sources import JupiterQuotes, MarketDiscovery, PumpFunApi, RugCheckApi, SolanaRpc
         discovery, quotes = MarketDiscovery(cfg.api, limits), JupiterQuotes(cfg.api, limits)
         onchain, rug_api = SolanaRpc(cfg.api, limits), RugCheckApi(cfg.api, limits)
+        pumpfun = PumpFunApi(cfg.api, limits)
     # mock market only moves between cycles, so waiting out the latency would change nothing
     exe = make_execution(cfg.mode, quotes, cfg.risk, sleep=(lambda _s: None) if mock else time.sleep)
     checker = RugChecker(cfg.rug, onchain, rug_api if cfg.rug.use_rugcheck_api else None, quotes,
                          cfg.risk.slippage_bps)
+    memory = MarketMemory(cfg.critic.liquidity_window_minutes * 60)
+    critic = Critic(cfg.critic, cfg.rug, memory, rug_api=rug_api, pumpfun=pumpfun if cfg.api.use_pumpfun else None,
+                    onchain=onchain)
     on_tick = world.step if mock else (lambda: None)
-    return discovery, checker, exe, on_tick, limits
+    return discovery, checker, exe, on_tick, limits, critic
 
 
 def main(argv=None) -> int:
@@ -70,8 +75,8 @@ def main(argv=None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    discovery, checker, exe, on_tick, limits = build(cfg, a.mock, a.seed)
-    pipe = Pipeline(cfg, discovery, checker, exe, store, echo=not a.quiet, limits=limits)
+    discovery, checker, exe, on_tick, limits, critic = build(cfg, a.mock, a.seed)
+    pipe = Pipeline(cfg, discovery, checker, exe, store, echo=not a.quiet, limits=limits, critic=critic)
     if not a.no_dashboard:
         try:
             serve(cfg.db_path, cfg.dashboard_host, cfg.dashboard_port, background=True)

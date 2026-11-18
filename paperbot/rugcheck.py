@@ -37,6 +37,7 @@ class RugChecker:
             rep.reasons.append("mint account unreadable")
         else:
             rep.decimals = mi.decimals
+            rep.supply = mi.supply
             if c.require_no_mint_authority and mi.mint_authority:
                 rep.reasons.append("mint authority not revoked")
             if c.require_no_freeze_authority and mi.freeze_authority:

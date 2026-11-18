@@ -1,14 +1,17 @@
-"""Agent pipeline: Scanner -> RugCheck -> Sizer -> Executor -> Logger -> Equity.
+"""Agent pipeline: Scanner -> Social -> RugCheck -> Sizer -> Critic -> Executor -> Logger -> Equity.
 
 Each agent is a small class with one job. `Pipeline.tick()` runs one cycle:
   1. Equity   marks open positions to market with real sell quotes
   2. Executor closes positions whose exit rule fired (SL / TP / trailing / time / no route)
   3. Equity   rolls the UTC day and checks the daily loss limit
   4. Scanner  finds candidates that pass the entry signal
-  5. RugCheck screens them (authorities, holders, LP, RugCheck API, sell simulation)
-  6. Sizer    decides position size under the risk limits
-  7. Executor opens simulated positions from fresh Jupiter quotes
-  8. Equity   writes an equity snapshot
+  5. Social   scores hype proxies (X/TG links, pump.fun comments, KOTH; paid boosts count against)
+  6. RugCheck screens them (authorities, holders, LP, RugCheck API, sell simulation)
+  7. Sizer    decides position size under the risk limits
+  8. Critic   last anti-rug gate before buying (insiders, dev history, fresh wallets, LP pulls,
+              fake hype, copycats, losing streak, chasing); approves or rejects, never tunes
+  9. Executor opens simulated positions from fresh Jupiter quotes
+  10. Equity  writes an equity snapshot
 Logger is used by every agent; everything ends up in SQLite.
 """
 from __future__ import annotations
@@ -17,6 +20,7 @@ import time
 from datetime import datetime, timezone
 
 from .config import LAMPORTS_PER_SOL, BotConfig
+from .critic import Critic, MarketMemory, social_score
 from .execution import Fill, PaperExecution
 from .models import RugReport, TokenCandidate
 from .risk import Account, daily_limit_hit, exit_reason, size_position
@@ -25,7 +29,7 @@ from .rugcheck import RugChecker
 from .sources import DiscoveryProvider, SourceUnavailable
 from .store import Store
 
-AGENTS = ["Scanner", "RugCheck", "Sizer", "Executor", "Logger", "Equity"]
+AGENTS = ["Scanner", "Social", "RugCheck", "Sizer", "Critic", "Executor", "Logger", "Equity"]
 
 
 class Logger:
@@ -58,8 +62,10 @@ class Logger:
 
 
 class Scanner:
-    def __init__(self, cfg: BotConfig, discovery: DiscoveryProvider, store: Store, log: Logger):
+    def __init__(self, cfg: BotConfig, discovery: DiscoveryProvider, store: Store, log: Logger,
+                 memory: MarketMemory | None = None):
         self.s = cfg.strategy
+        self.memory = memory
         self.cooldown_s = cfg.risk.token_cooldown_minutes * 60
         self.discovery = discovery
         self.store = store
@@ -92,6 +98,8 @@ class Scanner:
     def run(self, held: set[str]) -> list[tuple[TokenCandidate, str]]:
         now = time.time()
         cands = self.discovery.candidates()
+        if self.memory is not None:
+            self.memory.observe(cands)
         for err in getattr(self.discovery, "last_errors", []) or []:
             self.log.log("Scanner", "warn", f"source error: {err}")
         blacklist = set(self.store.get("blacklist", []))
@@ -124,6 +132,35 @@ class Scanner:
                 self._logged[c.mint] = now
                 self.log.log("Scanner", "info", f"{c.symbol} [{c.source}] {why}", c.mint)
         return picked
+
+
+class Social:
+    """Hype proxies without the X API. Counts and presence only: no text is read."""
+
+    def __init__(self, cfg: BotConfig, log: Logger):
+        self.cfg = cfg.social
+        self.log = log
+        self._logged: dict[str, float] = {}
+
+    def run(self, picked: list[tuple[TokenCandidate, str]]) -> list[tuple[TokenCandidate, str]]:
+        if not self.cfg.enabled:
+            self.log.status("Social", "off")
+            return picked
+        out, weak = [], 0
+        now = time.time()
+        for c, why in picked:
+            score, parts = social_score(c, self.cfg)
+            c.social_score = score
+            txt = f"social {score:+.1f} ({', '.join(parts) or 'no links, no comments'})"
+            if score >= self.cfg.min_score:
+                out.append((c, f"{why} | {txt}"))
+            else:
+                weak += 1
+                if now - self._logged.get(c.mint, 0) > 300:
+                    self._logged[c.mint] = now
+                    self.log.log("Social", "info", f"{c.symbol} skip: {txt} < {self.cfg.min_score:g}", c.mint)
+        self.log.status("Social", f"{len(out)} with hype, {weak} too quiet or paid")
+        return out
 
 
 class RugGuard:
@@ -179,6 +216,44 @@ class Sizer:
         return size
 
 
+class CriticAgent:
+    name = "Critic"
+
+    def __init__(self, cfg: BotConfig, critic: Critic, store: Store, log: Logger):
+        self.cfg = cfg.critic
+        self.critic = critic
+        self.store = store
+        self.log = log
+        self._soft: dict[str, float] = {}   # mint -> ts of last soft reject (don't re-judge every tick)
+        self.approved = self.rejected = 0
+
+    def review(self, c: TokenCandidate, rep: RugReport, size_sol: float) -> str | None:
+        """Returns the verdict text for the trade reason if approved, else None."""
+        if not self.cfg.enabled:
+            return "critic off"
+        now = time.time()
+        if now - self._soft.get(c.mint, 0) < 120:
+            return None
+        v = self.critic.review(c, rep, size_sol, self.store.open_positions(), self.store.closed_positions(10))
+        self.store.record_critic(c, v.approved, size_sol, v.reasons, v.notes)
+        if v.approved:
+            self.approved += 1
+            self.log.log(self.name, "info", f"{c.symbol} APPROVE {size_sol:.3f} SOL"
+                         + (f" (notes: {'; '.join(v.notes)})" if v.notes else ""), c.mint)
+        else:
+            self.rejected += 1
+            if v.hard:  # rug-type signal: never consider this token again
+                bl = set(self.store.get("blacklist", []))
+                bl.add(c.mint)
+                self.store.set("blacklist", sorted(bl)[-5000:])
+            else:
+                self._soft[c.mint] = now
+            self.log.log(self.name, "warn", f"{c.symbol} REJECT: {'; '.join(v.reasons)}", c.mint)
+        cnt = self.store.critic_counts()
+        self.log.status(self.name, f"{cnt['approved']} approved, {cnt['rejected']} rejected")
+        return v.summary() if v.approved else None
+
+
 class Executor:
     def __init__(self, cfg: BotConfig, exe: PaperExecution, store: Store, log: Logger):
         self.r = cfg.risk
@@ -186,7 +261,8 @@ class Executor:
         self.store = store
         self.log = log
 
-    def open(self, c: TokenCandidate, rep: RugReport, size_sol: float, signal: str) -> int | None:
+    def open(self, c: TokenCandidate, rep: RugReport, size_sol: float, signal: str,
+             critic: str | None = None) -> int | None:
         res = self.exe.execute_buy(c.mint, int(size_sol * LAMPORTS_PER_SOL), self.r.max_price_impact_pct)
         if res.fill is None:
             self._fee_lost(res.fee_lost_sol)
@@ -200,13 +276,15 @@ class Executor:
             self.log.log("Executor", "warn", f"{c.symbol}: insufficient paper cash", c.mint)
             return None
         reason = (f"{signal} | rug ok (score {rep.rugcheck_score}, top10 {rep.top10_pct}%, "
-                  f"LP {rep.lp_locked_pct}%, rt {rep.roundtrip_loss_pct}%)")
+                  f"LP {rep.lp_locked_pct}%, rt {rep.roundtrip_loss_pct}%)"
+                  + (f" | {critic}" if critic else ""))
         mark_value = cost  # until first mark
         pid = self.store.insert("positions", mint=c.mint, symbol=c.symbol, source=c.source, status="open",
                                 opened_at=time.time(), size_sol=size_sol, cost_sol=cost,
                                 token_amount=fill.fill_out, decimals=rep.decimals or 0, entry_reason=reason,
                                 peak_value_sol=mark_value, last_value_sol=mark_value, quote_failures=0,
-                                fees_sol=fill.network_fee_sol + fill.slippage_cost_sol)
+                                fees_sol=fill.network_fee_sol + fill.slippage_cost_sol,
+                                bonding=int(c.is_bonding_curve))
         self.store.set("cash", cash - cost)
         self.log.trade(pid, c.mint, c.symbol, fill, reason, fill.fill_out)
         self.log.log("Executor", "trade",
@@ -343,15 +421,19 @@ class EquityAgent:
 
 class Pipeline:
     def __init__(self, cfg: BotConfig, discovery: DiscoveryProvider, checker: RugChecker,
-                 exe: PaperExecution, store: Store, echo: bool = True, limits: Limits | None = None):
+                 exe: PaperExecution, store: Store, echo: bool = True, limits: Limits | None = None,
+                 critic: Critic | None = None):
         self.cfg = cfg
         self.limits = limits or Limits()
         self.store = store
         self.exe = exe
         self.log = Logger(store, echo)
-        self.scanner = Scanner(cfg, discovery, store, self.log)
+        self.memory = critic.memory if critic else MarketMemory(cfg.critic.liquidity_window_minutes * 60)
+        self.scanner = Scanner(cfg, discovery, store, self.log, self.memory)
+        self.social = Social(cfg, self.log)
         self.rug = RugGuard(checker, store, self.log)
         self.sizer = Sizer(cfg, self.log)
+        self.critic = CriticAgent(cfg, critic or Critic(cfg.critic, cfg.rug, self.memory), store, self.log)
         self.executor = Executor(cfg, exe, store, self.log)
         jup = self.limits.get("jupiter")
         self.equity = EquityAgent(cfg, exe, store, self.log, jup.per_minute if jup else None)
@@ -370,7 +452,7 @@ class Pipeline:
             self.log.status("Scanner", f"idle: {acc.open_count}/{self.cfg.risk.max_open_positions} positions open")
         elif not acc.halted:
             held = {p["mint"] for p in self.store.open_positions()}
-            picked = self.scanner.run(held)
+            picked = self.social.run(self.scanner.run(held))
             probe = max(self.cfg.risk.min_position_sol, acc.equity * self.cfg.risk.position_size_pct / 100)
             jup = self.limits.get("jupiter")
             # never ask for more than the bucket can hold, or entries would wait forever
@@ -379,8 +461,11 @@ class Pipeline:
             for cand, signal, rep in self.rug.run(picked, min(probe, self.cfg.risk.max_position_sol), budget):
                 acc = self.equity.account()
                 size = self.sizer.run(cand, acc, self.exe.tx_fee_sol)
-                if size:
-                    self.executor.open(cand, rep, size, signal)
+                if not size:
+                    continue
+                verdict = self.critic.review(cand, rep, size)
+                if verdict is not None:
+                    self.executor.open(cand, rep, size, signal, verdict)
         else:
             self.log.status("Scanner", "paused (daily loss limit)", "halted")
         self.store.set("last_tick", time.time())
