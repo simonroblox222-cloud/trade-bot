@@ -61,8 +61,11 @@ class Store:
                 self.conn.execute("PRAGMA journal_mode=WAL")
                 self.conn.executescript(SCHEMA)
                 cols = {r[1] for r in self.conn.execute("PRAGMA table_info(positions)")}
-                if "bonding" not in cols:  # added with the Critic; older DBs get the column
-                    self.conn.execute("ALTER TABLE positions ADD COLUMN bonding INTEGER DEFAULT 0")
+                for col, typ in (("bonding", "INTEGER DEFAULT 0"),           # added with the Critic
+                                 ("partial_proceeds_sol", "REAL DEFAULT 0"),  # partial take-profits
+                                 ("tp_level", "INTEGER DEFAULT 0")):
+                    if col not in cols:  # older DBs get the new columns
+                        self.conn.execute(f"ALTER TABLE positions ADD COLUMN {col} {typ}")
                 self.conn.commit()
 
     def _rows(self, sql: str, args: tuple = ()) -> list[dict]:

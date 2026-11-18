@@ -92,6 +92,9 @@ class MarketDiscovery:
         self.last_errors: list[str] = []
         self._mints_cache: dict[str, list[str]] = {}
         self._pf_meta: dict[str, dict] = {}      # pump.fun coin fields we use (numbers / presence only)
+        self._watch: dict[str, list] = {}        # mint -> [first_seen, source, misses]
+        self._dead: set[str] = set()             # no pair / dead pool: don't re-add from the feeds
+        self.stats = {"feeds": 0, "watchlist": 0, "pairs": 0}
 
     def _dexscreener_mints(self) -> list[str]:
         # non-blocking: when the budget is used up we reuse the previous list
@@ -144,7 +147,18 @@ class MarketDiscovery:
             for m in self._mints_cache.get(name, []):
                 sourced.setdefault(m, name)
         boosted = set(self._mints_cache.get("boosts", []))
-        mints = list(sourced)[:90]
+        now = time.time()
+        for m, src in sourced.items():
+            if m not in self._watch and m not in self._dead:
+                self._watch[m] = [now, src, 0]
+        cutoff = now - self.api.watchlist_hours * 3600
+        self._dead |= {m for m, w in self._watch.items() if w[2] >= 3}
+        if len(self._dead) > 20_000:
+            self._dead = set(list(self._dead)[-10_000:])
+        self._watch = {m: w for m, w in self._watch.items() if w[0] >= cutoff and w[2] < 3}
+        # newest first; the rest of the watchlist keeps being re-checked until it ages out or dies
+        mints = sorted(self._watch, key=lambda m: self._watch[m][0], reverse=True)[: max(30, self.api.watchlist_size)]
+        sourced = {m: self._watch[m][1] for m in mints}
         out: list[TokenCandidate] = []
         for i in range(0, len(mints), 30):  # endpoint accepts up to 30 addresses
             batch = mints[i:i + 30]
@@ -154,7 +168,18 @@ class MarketDiscovery:
             except HttpError as e:
                 self.last_errors.append(f"dexscreener pairs: {e}")
                 continue
-            out.extend(self._best_pairs(pairs or [], set(batch), sourced, self._pf_meta))
+            found = self._best_pairs(pairs or [], set(batch), sourced, self._pf_meta)
+            got = {c.mint for c in found}
+            for m in batch:  # no SOL/USDC pair yet, or the pool is dead: drop after 3 tries
+                w = self._watch.get(m)
+                if w is not None:
+                    w[2] = 0 if m in got else w[2] + 1
+            for c in found:
+                if c.liquidity_usd < 1000 and c.mint in self._watch:
+                    self._watch[c.mint][2] = 3
+            out.extend(found)
+        self.stats = {"feeds": len(set().union(*map(set, self._mints_cache.values()))) if self._mints_cache else 0,
+                      "watchlist": len(self._watch), "pairs": len(out)}
         for c in out:  # listed in the paid boosts feed = boosted, even if the pair doesn't say so
             if c.mint in boosted and not c.boosts_active:
                 c.boosts_active = 1
@@ -213,7 +238,10 @@ class SolanaRpc:
                         {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params},
                         self.api.timeout_s, self.limiter)
         if "error" in res:
-            raise HttpError(f"RPC {method}: {res['error']}")
+            err = res["error"]
+            msg = err.get("message", err) if isinstance(err, dict) else err
+            code = err.get("code") if isinstance(err, dict) else None
+            raise HttpError(f"RPC {method}: {str(msg)[:120]}", 429 if code == 429 else None)
         return res["result"]
 
     def mint_info(self, mint: str) -> MintInfo | None:
@@ -249,8 +277,9 @@ class SolanaRpc:
             accounts = res.get("value", [])[:20]
             owners_res = self._call("getMultipleAccounts",
                                     [[a["address"] for a in accounts], {"encoding": "jsonParsed"}])
-        except HttpError:
-            return []
+        except HttpError as e:
+            # no holder data = no concentration check: never pass a token on that, retry later
+            raise SourceUnavailable(f"holders: {e}", e.status) from e
         holders = []
         for acc, info in zip(accounts, owners_res.get("value", [])):
             owner = None

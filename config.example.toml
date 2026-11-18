@@ -18,6 +18,8 @@ solana_rpc_url = "https://api.mainnet-beta.solana.com"   # zadarmo, bez kľúča
 use_dexscreener = true
 use_pumpfun = true              # neoficiálne pump.fun frontend API, môže sa zmeniť
 use_boosts = true               # DexScreener platené boosty ako zdroj; Social ich ráta ako mínus
+watchlist_hours = 12            # tokeny z "latest" zoznamov sa sledujú ďalej, kým nedorastú do min. veku
+watchlist_size = 150            # koľko z nich sa preverí v každom skene (30 na jedno volanie DexScreeneru)
 
 [rate_limits]                       # požiadavky za minútu, tesne pod free limitmi (0 = bez limitu)
 jupiter = 55
@@ -79,7 +81,9 @@ max_total_exposure_pct = 30
 daily_loss_limit_pct = 5
 close_all_on_daily_limit = false
 stop_loss_pct = 20
-take_profit_pct = 50
+take_profit_pct = 100                       # predá všetko, čo zostalo
+partial_take_profits = [[25, 0.35], [50, 0.5]]   # pri +25 % predaj 35 % držaných tokenov, pri +50 % polovicu zvyšku; [] = vypnuté
+min_partial_sol = 0.03
 trailing_arm_pct = 20
 trailing_stop_pct = 15
 max_hold_minutes = 120

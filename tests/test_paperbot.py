@@ -370,6 +370,7 @@ class PipelineTests(unittest.TestCase):
             # cash ledger: start - buys + sells == cash
             buys = sum(p["cost_sol"] for p in store._rows("SELECT cost_sol FROM positions"))
             sells = sum(p["proceeds_sol"] or 0 for p in store.closed_positions(10_000))
+            sells += sum(p["partial_proceeds_sol"] or 0 for p in store.open_positions())  # partial take-profits
             # reverted sells are already in cost_sol; reverted buys only in failed_tx_fees
             failed_buys = (store.get("failed_tx_fees", 0.0) or 0.0) - sum(
                 p["cost_sol"] - p["size_sol"] - cfg.risk.ata_rent_sol - (cfg.risk.base_fee_sol + cfg.risk.priority_fee_sol)
@@ -517,7 +518,7 @@ class RateLimitTests(unittest.TestCase):
             if "pump.fun" in url:
                 return [{"mint": "B"}]
             return [{"baseToken": {"address": m, "symbol": m}, "quoteToken": {"symbol": "SOL"},
-                     "liquidity": {"usd": 1}} for m in ("A", "B")]
+                     "liquidity": {"usd": 5000}} for m in ("A", "B")]
 
         d = sources.MarketDiscovery(C.ApiConfig(), limits)
         with mock.patch.object(sources, "get_json", side_effect=fake):
@@ -860,6 +861,91 @@ class BlockedApiTests(unittest.TestCase):
             for _ in range(10):
                 sc.run(set())
             self.assertEqual(len([e for e in store.events() if "source error" in e["message"]]), 1)
+
+
+# ------------------------------------------- partial take-profit, holders, watchlist
+class PartialTakeProfitTests(unittest.TestCase):
+    def test_sells_in_parts_and_books_everything_on_close(self):
+        from paperbot.agents import Executor, Logger
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig()
+            cfg.risk.latency_seconds = 0
+            store = Store(os.path.join(d, "t.sqlite"))
+            store.set("cash", 9.0)
+            q = FixedQuotes(sell_factor=1.30)   # token is up ~30 %
+            exe = PaperExecution(q, cfg.risk)
+            ex = Executor(cfg, exe, store, Logger(store, echo=False))
+            pid = store.insert("positions", mint=MINT, symbol="TOK", source="x", status="open", opened_at=time.time(),
+                               size_sol=1.0, cost_sol=1.0, token_amount=1_000_000, decimals=6, entry_reason="t",
+                               peak_value_sol=1.0, last_value_sol=1.0, quote_failures=0, fees_sol=0.0)
+            pos = store.open_positions()[0]
+            ex.manage_exits({pid: exe.simulate_sell(MINT, pos["token_amount"])})
+            pos = store.open_positions()[0]
+            self.assertEqual(pos["tp_level"], 1)
+            self.assertEqual(pos["token_amount"], 650_000)        # 35 % sold
+            self.assertAlmostEqual(store.get("cash"), 9.0 + pos["partial_proceeds_sol"])
+            self.assertTrue(any("partial take-profit" in t["reason"] for t in store.trades()))
+            ex.manage_exits({pid: exe.simulate_sell(MINT, pos["token_amount"])})   # same price: no second level
+            self.assertEqual(store.open_positions()[0]["tp_level"], 1)
+            pos = store.open_positions()[0]
+            ex.sell(pos, None, "test close")
+            closed = store.closed_positions()[0]
+            self.assertAlmostEqual(closed["proceeds_sol"] - closed["pnl_sol"], 1.0)
+            self.assertGreater(closed["pnl_sol"], 0.2)
+            self.assertAlmostEqual(store.get("cash"), 9.0 + closed["proceeds_sol"])
+
+
+class HolderDataTests(unittest.TestCase):
+    def test_rpc_holder_error_defers_instead_of_passing(self):
+        class NoHolders(FakeChain):
+            def largest_holders(self, m):
+                raise sources.SourceUnavailable("holders: RPC getTokenLargestAccounts: Too many requests", 429)
+        chk = RugChecker(C.RugConfig(), NoHolders(), FakeRugApi(GOOD_API), FixedQuotes(), 300)
+        rep = chk.check(cand(), 100_000_000)
+        self.assertTrue(rep.transient)
+        self.assertFalse(rep.passed)
+        self.assertIn("getTokenLargestAccounts", rep.reasons[0])
+
+    def test_rpc_error_message_is_short(self):
+        rpc = sources.SolanaRpc(C.ApiConfig())
+        with mock.patch.object(sources, "post_json", return_value={"error": {"code": -32005, "message": "x" * 500}}):
+            with self.assertRaises(sources.SourceUnavailable) as cm:
+                rpc.largest_holders(MINT)
+        self.assertLess(len(str(cm.exception)), 200)
+
+
+class WatchlistTests(unittest.TestCase):
+    def test_mints_stay_watched_after_leaving_the_latest_feed(self):
+        feed = [[{"chainId": "solana", "tokenAddress": "OLD"}], [{"chainId": "solana", "tokenAddress": "NEW"}]]
+
+        def fake(url, *a, **k):
+            if "token-profiles" in url:
+                return feed.pop(0) if feed else []
+            mints = url.rsplit("/", 1)[-1].split(",")
+            return [{"baseToken": {"address": m, "symbol": m}, "quoteToken": {"symbol": "SOL"},
+                     "liquidity": {"usd": 50_000}} for m in mints if m != "GONE"]
+
+        d = sources.MarketDiscovery(C.ApiConfig(use_pumpfun=False, use_boosts=False))
+        with mock.patch.object(sources, "get_json", side_effect=fake):
+            self.assertEqual({c.mint for c in d.candidates()}, {"OLD"})
+            self.assertEqual({c.mint for c in d.candidates()}, {"OLD", "NEW"})
+            self.assertEqual({c.mint for c in d.candidates()}, {"OLD", "NEW"})   # feed empty now
+        self.assertEqual(d.stats["watchlist"], 2)
+
+    def test_scanner_prints_a_summary_line_while_quiet(self):
+        from paperbot.agents import Logger, Scanner
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "t.sqlite"))
+            disc = mock.Mock()
+            disc.candidates.return_value = [cand(liquidity_usd=5_000, price_change_m5_pct=-1)]
+            disc.last_errors, disc.stats = [], {"watchlist": 40}
+            sc = Scanner(C.BotConfig(), disc, store, Logger(store, echo=False))
+            sc._summary_at -= 61
+            sc.run(set())
+            msg = [e["message"] for e in store.events() if "scans" in e["message"]][0]
+        self.assertIn("watchlist 40", msg)
+        self.assertIn("liq 1", msg)
+        self.assertIn("m5 1", msg)
 
 
 if __name__ == "__main__":

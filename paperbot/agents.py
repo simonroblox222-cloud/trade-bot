@@ -16,6 +16,7 @@ Logger is used by every agent; everything ends up in SQLite.
 """
 from __future__ import annotations
 
+import dataclasses
 import time
 from datetime import datetime, timezone
 
@@ -73,6 +74,9 @@ class Scanner:
         self._logged: dict[str, float] = {}
         self._streak: dict[str, int] = {}
         self._err_logged: dict[str, float] = {}
+        self._misses: dict[str, int] = {}
+        self._scans = 0
+        self._summary_at = time.time()
 
     def reset_streaks(self) -> None:
         """Scanning paused (positions full / halted): confirmations must start over."""
@@ -118,6 +122,11 @@ class Scanner:
             ok, why = self.signal(c, now)
             if ok:
                 passing.append((c, why))
+            else:
+                for part in why.split(", "):
+                    key = {"buys/sells": "buy/sell ratio", "bonding": "bonding curve"}.get(part.split(" ")[0],
+                                                                                           part.split(" ")[0])
+                    self._misses[key] = self._misses.get(key, 0) + 1
         # The signal must hold for `confirm_cycles` scans in a row before we act on it
         # (warp-id/solana-trading-bot CONSECUTIVE_FILTER_MATCHES): filters out one-off spikes.
         need = max(1, self.s.confirm_cycles)
@@ -132,6 +141,18 @@ class Scanner:
                     reverse=True)
         picked = picked[: self.s.max_candidates_per_tick]
         self.log.status("Scanner", f"{len(cands)} pairs seen, {len(picked)} confirmed, {waiting} confirming")
+        self._scans += 1
+        if now - self._summary_at >= 60:   # one line a minute, so a quiet bot is visibly alive
+            st = getattr(self.discovery, "stats", {}) or {}
+            top = sorted(self._misses.items(), key=lambda kv: kv[1], reverse=True)[:4]
+            per = max(self._scans, 1)
+            misses = ", ".join(f"{k} {v / per:.0f}" for k, v in top) or "none"
+            self.log.log("Scanner", "info",
+                         f"last {self._scans} scans: ~{len(cands)} pairs checked"
+                         + (f" (watchlist {st['watchlist']})" if st.get("watchlist") else "")
+                         + f", now {len(passing)} pass the signal ({waiting} still confirming)."
+                         f" Most common misses per scan: {misses}")
+            self._misses, self._scans, self._summary_at = {}, 0, now
         for c, why in picked:
             if now - self._logged.get(c.mint, 0) > 300:  # don't repeat the same pick every cycle
                 self._logged[c.mint] = now
@@ -319,19 +340,47 @@ class Executor:
         return True
 
     def close(self, pos: dict, fill: Fill | None, reason: str) -> None:
-        proceeds = fill.net_sol if fill else 0.0
+        partial = pos.get("partial_proceeds_sol") or 0.0
+        proceeds = (fill.net_sol if fill else 0.0) + partial
         pnl = proceeds - pos["cost_sol"]
         fees = pos["fees_sol"] + ((fill.network_fee_sol + fill.slippage_cost_sol) if fill else 0)
         self.store.update_position(pos["id"], status="closed", closed_at=time.time(), exit_reason=reason,
                                    proceeds_sol=proceeds, pnl_sol=pnl, pnl_pct=pnl / pos["cost_sol"] * 100,
-                                   fees_sol=fees, last_value_sol=proceeds)
-        self.store.set("cash", self.store.get("cash") + proceeds)
+                                   fees_sol=fees, last_value_sol=proceeds - partial)
+        self.store.set("cash", self.store.get("cash") + proceeds - partial)   # partials are already in cash
         if fill:
             self.log.trade(pos["id"], pos["mint"], pos["symbol"], fill, reason, pos["token_amount"], pnl)
         self.log.log("Executor", "trade",
-                     f"SELL {pos['symbol']} -> {proceeds:.4f} SOL, P&L {pnl:+.4f} SOL "
+                     f"SELL {pos['symbol']} -> {proceeds:.4f} SOL{' (incl. partials)' if partial else ''}, P&L {pnl:+.4f} SOL "
                      f"({pnl / pos['cost_sol'] * 100:+.1f}%) | {reason}", pos["mint"])
         self.log.status("Executor", f"SELL {pos['symbol']} {pnl:+.4f} SOL")
+
+    def sell_partial(self, pos: dict, share: float, reason: str) -> bool:
+        """Sell part of a position. The token account stays open, so no rent comes back."""
+        tokens = int(pos["token_amount"] * share)
+        if tokens <= 0:
+            return False
+        res = self.exe.execute_sell(pos["mint"], tokens, None)
+        if res.fill is None:
+            self._fee_lost(res.fee_lost_sol)
+            if res.fee_lost_sol:
+                self.store.update_position(pos["id"], cost_sol=pos["cost_sol"] + res.fee_lost_sol,
+                                           fees_sol=pos["fees_sol"] + res.fee_lost_sol)
+            self.log.log("Executor", "warn", f"partial SELL {pos['symbol']} failed: {res.error}", pos["mint"])
+            return False
+        fill = dataclasses.replace(res.fill, rent_sol=0.0)
+        got = fill.net_sol
+        self.store.update_position(pos["id"], token_amount=pos["token_amount"] - tokens,
+                                   partial_proceeds_sol=(pos.get("partial_proceeds_sol") or 0) + got,
+                                   tp_level=(pos.get("tp_level") or 0) + 1,
+                                   fees_sol=pos["fees_sol"] + fill.network_fee_sol + fill.slippage_cost_sol,
+                                   last_value_sol=max(0.0, (pos["last_value_sol"] or 0) * (1 - share)))
+        self.store.set("cash", self.store.get("cash") + got)
+        self.log.trade(pos["id"], pos["mint"], pos["symbol"], fill, reason, tokens, None)
+        self.log.log("Executor", "trade", f"PARTIAL SELL {pos['symbol']} {share:.0%} -> {got:.4f} SOL | {reason}",
+                     pos["mint"])
+        self.log.status("Executor", f"partial SELL {pos['symbol']} +{got:.4f} SOL")
+        return True
 
     def manage_exits(self, marks: dict[int, Fill | None]) -> None:
         now = time.time()
@@ -341,10 +390,21 @@ class Executor:
                 if pos["quote_failures"] >= self.r.max_consecutive_quote_failures:
                     self.close(pos, None, f"no sell route x{pos['quote_failures']}: written off (likely rug)")
                 continue
-            why = exit_reason(pos["cost_sol"], fill.net_sol, pos["peak_value_sol"],
+            # whole position = what's still held + what partial sales already brought in
+            whole = fill.net_sol + (pos.get("partial_proceeds_sol") or 0.0)
+            why = exit_reason(pos["cost_sol"], whole, pos["peak_value_sol"],
                               (now - pos["opened_at"]) / 60, self.r)
             if why:
                 self.sell(pos, fill, why)
+                continue
+            levels = self.r.partial_take_profits or []
+            lvl = pos.get("tp_level") or 0
+            if lvl < len(levels):
+                gain = (whole / pos["cost_sol"] - 1) * 100
+                at, share = float(levels[lvl][0]), float(levels[lvl][1])
+                if gain >= at and fill.net_sol * share >= self.r.min_partial_sol:
+                    self.sell_partial(pos, share, f"partial take-profit {gain:+.1f}% (level +{at:g}%: "
+                                                  f"sell {share:.0%} of what's held)")
 
 
 class EquityAgent:
@@ -385,9 +445,10 @@ class EquityAgent:
                 self.log.log("Equity", "warn", f"{pos['symbol']}: no sell quote ({pos['quote_failures'] + 1})",
                              pos["mint"])
             else:
-                v = fill.net_sol
+                v = fill.net_sol   # what's still held; the peak tracks the whole position
+                whole = v + (pos.get("partial_proceeds_sol") or 0.0)
                 self.store.update_position(pos["id"], last_value_sol=v, quote_failures=0,
-                                           peak_value_sol=max(pos["peak_value_sol"], v))
+                                           peak_value_sol=max(pos["peak_value_sol"], whole))
         return marks
 
     def account(self) -> Account:

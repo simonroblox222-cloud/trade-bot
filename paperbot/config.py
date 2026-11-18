@@ -37,6 +37,10 @@ class ApiConfig:
     use_dexscreener: bool = True
     use_pumpfun: bool = True
     use_boosts: bool = True             # boosted tokens as a discovery source (flagged as paid hype)
+    # "latest" feeds only show tokens for a few minutes, usually before they're old enough to
+    # pass the signal. Keep re-checking every mint we've seen for this long (DexScreener pairs).
+    watchlist_hours: float = 12.0
+    watchlist_size: int = 150           # mints re-checked per scan (30 per DexScreener call)
     timeout_s: float = 10.0
 
 
@@ -146,7 +150,11 @@ class RiskConfig:
     daily_loss_limit_pct: float = 5.0     # vs equity at UTC day start
     close_all_on_daily_limit: bool = False
     stop_loss_pct: float = 20.0
-    take_profit_pct: float = 50.0
+    take_profit_pct: float = 100.0        # sell everything that's left
+    # sell in parts on the way up: [gain %, share of the tokens still held]. The rest rides
+    # with the trailing stop. [] = off.
+    partial_take_profits: list = field(default_factory=lambda: [[25.0, 0.35], [50.0, 0.5]])
+    min_partial_sol: float = 0.03         # skip a partial sale smaller than this (fees)
     trailing_stop_pct: float = 15.0       # from peak, once armed
     trailing_arm_pct: float = 20.0        # arm trailing after +X %
     max_hold_minutes: float = 120.0

@@ -199,7 +199,8 @@ function render(s) {
     ["Otvorené", r => `<td class="nw">${dt(r.opened_at)}</td>`],
     ["Náklad ◎", r => `<td class="n">${f(r.cost_sol)}</td>`],
     ["Hodnota ◎", r => `<td class="n">${f(r.last_value_sol)}</td>`],
-    ["P&L", r => { const p = r.last_value_sol - r.cost_sol; return `<td class="n ${cls(p)}">${sg(p)} (${sg(p / r.cost_sol * 100, 1)}%)</td>`; }],
+    ["P&L", r => { const p = r.last_value_sol + (r.partial_proceeds_sol || 0) - r.cost_sol; return `<td class="n ${cls(p)}">${sg(p)} (${sg(p / r.cost_sol * 100, 1)}%)` +
+      (r.partial_proceeds_sol ? `<div class="muted">z toho predané ${f(r.partial_proceeds_sol)} ◎</div>` : "") + `</td>`; }],
     ["Peak ◎", r => `<td class="n">${f(r.peak_value_sol)}</td>`],
     ["Dôvod vstupu", r => `<td class="why">${esc(r.entry_reason)}</td>`],
   ], "žiadne otvorené pozície");

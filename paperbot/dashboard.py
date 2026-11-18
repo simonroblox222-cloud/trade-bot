@@ -36,7 +36,8 @@ def build_state(store: Store) -> dict:
         "account": {
             "starting": start, "cash": cash, "positions_value": pos_value, "equity": equity,
             "total_pnl": equity - start, "total_pnl_pct": (equity / start - 1) * 100 if start else 0,
-            "unrealized": sum((p["last_value_sol"] or 0) - p["cost_sol"] for p in open_pos),
+            "unrealized": sum((p["last_value_sol"] or 0) + (p.get("partial_proceeds_sol") or 0) - p["cost_sol"]
+                              for p in open_pos),
             "realized": st["realized"], "fees": st["fees"],
             "today_pnl": equity - day_start if day_start else 0.0,
             "wins": int(st["wins"]), "losses": int(st["losses"]), "closed": closed,
