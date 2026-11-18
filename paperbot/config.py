@@ -78,6 +78,8 @@ class SocialConfig:
     Paid DexScreener boosts count AGAINST a token."""
     enabled: bool = True
     min_score: float = 0.5             # at least one link (X, Telegram or website)
+    fresh_token_minutes: float = 30.0  # younger tokens pass without links (they rarely have any yet),
+                                       # unless a paid boost pushes the score below 0
     x_link: float = 1.0
     telegram_link: float = 0.5
     website: float = 0.5
@@ -119,8 +121,8 @@ class CriticConfig:
     max_open_same_source: int = 6
     losing_streak: int = 3
     losing_streak_pause_minutes: float = 30.0
-    max_m5_pct: float = 30.0               # chasing a vertical candle
-    max_h1_pct: float = 150.0
+    max_m5_pct: float = 60.0               # chasing a vertical candle
+    max_h1_pct: float = 400.0
     max_size_vs_liquidity_pct: float = 2.0
     max_roundtrip_share: float = 0.6       # rug-check round trip loss vs its limit
     paid_hype_min_replies: int = 20        # boosted tokens need this much organic chatter or an X link
@@ -164,15 +166,16 @@ class RiskConfig:
     max_total_exposure_pct: float = 30.0  # open positions cost / equity
     daily_loss_limit_pct: float = 5.0     # vs equity at UTC day start
     close_all_on_daily_limit: bool = False
-    stop_loss_pct: float = 20.0
-    take_profit_pct: float = 100.0        # sell everything that's left
+    # fast in, fast out: bank small gains and move on to the next token
+    stop_loss_pct: float = 12.0
+    take_profit_pct: float = 25.0         # sell everything that's left
     # sell in parts on the way up: [gain %, share of the tokens still held]. The rest rides
     # with the trailing stop. [] = off.
-    partial_take_profits: list = field(default_factory=lambda: [[25.0, 0.35], [50.0, 0.5]])
+    partial_take_profits: list = field(default_factory=lambda: [[12.0, 0.5]])
     min_partial_sol: float = 0.03         # skip a partial sale smaller than this (fees)
-    trailing_stop_pct: float = 15.0       # from peak, once armed
-    trailing_arm_pct: float = 20.0        # arm trailing after +X %
-    max_hold_minutes: float = 120.0
+    trailing_stop_pct: float = 7.0        # from peak, once armed
+    trailing_arm_pct: float = 10.0        # arm trailing after +X %
+    max_hold_minutes: float = 30.0
     token_cooldown_minutes: float = 20.0
     max_price_impact_pct: float = 3.0
     # costs

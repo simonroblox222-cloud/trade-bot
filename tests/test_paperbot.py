@@ -765,7 +765,7 @@ class CriticTests(unittest.TestCase):
         self.assertIn("3 losses in a row", v.reasons[0])
         self.assertFalse(v.hard)
         self.assertTrue(self.critic().review(cand(), rugrep(), 0.2, [], [{"pnl_sol": -0.01, "closed_at": now - 7200}] * 3).approved)
-        self.assertIn("chasing", self.critic().review(cand(price_change_m5_pct=45), rugrep(), 0.2, [], []).reasons[0])
+        self.assertIn("chasing", self.critic().review(cand(price_change_m5_pct=75), rugrep(), 0.2, [], []).reasons[0])
         bc = [{"mint": f"b{i}", "symbol": f"B{i}", "source": "pumpfun", "bonding": 1}
               for i in range(C.CriticConfig().max_open_bonding_curve)]
         self.assertIn("bonding-curve", self.critic().review(cand(is_bonding_curve=True, source="dexscreener"),
@@ -895,6 +895,8 @@ class PartialTakeProfitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = C.BotConfig()
             cfg.risk.latency_seconds = 0
+            cfg.risk.partial_take_profits = [[25.0, 0.35], [50.0, 0.5]]
+            cfg.risk.take_profit_pct, cfg.risk.trailing_arm_pct = 100.0, 20.0
             store = Store(os.path.join(d, "t.sqlite"))
             store.set("cash", 9.0)
             q = FixedQuotes(sell_factor=1.30)   # token is up ~30 %
@@ -1116,6 +1118,20 @@ class RpcLimitTests(unittest.TestCase):
         with mock.patch.object(sources, "post_json", side_effect=res) as pj:
             self.assertEqual(rpc.largest_holders(MINT), rpc.largest_holders(MINT))
         self.assertEqual(pj.call_count, 2)
+
+
+class FreshTokenSocialTests(unittest.TestCase):
+    def test_new_token_passes_without_links_but_not_if_paid(self):
+        from paperbot.agents import Logger, Social
+        now_ms = int(time.time() * 1000)
+        with tempfile.TemporaryDirectory() as d:
+            sa = Social(C.BotConfig(), Logger(Store(os.path.join(d, "t.sqlite")), echo=False))
+            fresh = cand(pair_created_at_ms=now_ms - 5 * 60_000)
+            old = cand(mint="O" * 43, pair_created_at_ms=now_ms - 90 * 60_000)
+            paid = cand(mint="P" * 43, pair_created_at_ms=now_ms - 5 * 60_000, boosts_active=10)
+            out = sa.run([(fresh, "s"), (old, "s"), (paid, "s")])
+        self.assertEqual([c.mint for c, _ in out], [MINT])
+        self.assertIn("socials not required yet", out[0][1])
 
 
 if __name__ == "__main__":

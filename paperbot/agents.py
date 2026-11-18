@@ -198,8 +198,12 @@ class Social:
             score, parts = social_score(c, self.cfg)
             c.social_score = score
             txt = f"social {score:+.1f} ({', '.join(parts) or 'no links, no comments'})"
+            age_min = (now - c.pair_created_at_ms / 1000) / 60 if c.pair_created_at_ms else None
+            fresh = age_min is not None and age_min < self.cfg.fresh_token_minutes and score >= 0
             if score >= self.cfg.min_score:
                 out.append((c, f"{why} | {txt}"))
+            elif fresh:   # brand-new token: links/comments usually come later; rug check + Critic still apply
+                out.append((c, f"{why} | {txt}, fresh {age_min:.0f}m: socials not required yet"))
             else:
                 weak += 1
                 if now - self._logged.get(c.mint, 0) > 300:

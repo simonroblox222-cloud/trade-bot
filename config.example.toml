@@ -36,6 +36,7 @@ rugcheck = 20
 
 [social]                            # hype bez X API: len počty a prítomnosť, žiadny text sa nečíta
 min_score = 0.5                     # aspoň jeden odkaz (X, Telegram alebo web)
+fresh_token_minutes = 30            # mladšie tokeny prejdú aj bez odkazov (ak nemajú platený boost)
 x_link = 1.0                        # token má odkaz na X účet
 telegram_link = 0.5
 website = 0.5
@@ -60,8 +61,8 @@ max_replies_per_minute = 5.0        # komentáre za minútu veku tokenu (boti)
 max_volume_to_liquidity_h1 = 15.0   # objem 1h / likvidita (wash trading)
 losing_streak = 3                   # po 3 prehrách po sebe pauza
 losing_streak_pause_minutes = 30
-max_m5_pct = 30.0                   # nenaháňať zvislú sviečku
-max_h1_pct = 150.0
+max_m5_pct = 60.0                   # nenaháňať zvislú sviečku
+max_h1_pct = 400.0
 max_size_vs_liquidity_pct = 2.0
 max_open_bonding_curve = 4
 max_open_same_source = 6
@@ -85,13 +86,14 @@ max_open_positions = 8
 max_total_exposure_pct = 30
 daily_loss_limit_pct = 5
 close_all_on_daily_limit = false
-stop_loss_pct = 20
-take_profit_pct = 100                       # predá všetko, čo zostalo
-partial_take_profits = [[25, 0.35], [50, 0.5]]   # pri +25 % predaj 35 % držaných tokenov, pri +50 % polovicu zvyšku; [] = vypnuté
+# rýchlo dnu, rýchlo von: zober malý zisk a choď na ďalší token
+stop_loss_pct = 12
+take_profit_pct = 25                        # predá všetko, čo zostalo
+partial_take_profits = [[12, 0.5]]          # pri +12 % predá polovicu; [] = vypnuté
 min_partial_sol = 0.03
-trailing_arm_pct = 20
-trailing_stop_pct = 15
-max_hold_minutes = 120
+trailing_arm_pct = 10
+trailing_stop_pct = 7
+max_hold_minutes = 30
 token_cooldown_minutes = 20
 max_price_impact_pct = 3
 slippage_bps = 300              # slippage tolerancia v quote (pod minOut by reálny swap zlyhal)
