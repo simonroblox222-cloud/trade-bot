@@ -1197,5 +1197,33 @@ class SlowApiTests(unittest.TestCase):
             self.assertEqual(op.call_count, 2)            # tried again after 15 s
 
 
+class NoSpamTests(unittest.TestCase):
+    def test_sizer_logs_once_and_soft_reject_is_explained_then_skipped(self):
+        from paperbot.agents import CriticAgent, Logger, Sizer
+        from paperbot.risk import Account
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "t.sqlite"))
+            log = Logger(store, echo=False)
+            cfg = C.BotConfig()
+            sz = Sizer(cfg, log)
+            acc = Account(cash=10, equity=10, open_cost=0, open_count=0, halted=False)
+            for _ in range(5):
+                sz.run(cand(), acc, 0.0001)
+            self.assertEqual(sum(e["agent"] == "Sizer" for e in store.events()), 1)
+            now = time.time()
+            for i in range(3):
+                store.insert("positions", mint=f"L{i}", symbol="L", source="x", status="closed", opened_at=now - 300,
+                             closed_at=now - 60, size_sol=0.2, cost_sol=0.2, token_amount=1, decimals=6,
+                             entry_reason="t", pnl_sol=-0.01, pnl_pct=-5, fees_sol=0)
+            ca = CriticAgent(cfg, Critic(cfg.critic, cfg.rug, MarketMemory()), store, log)
+            self.assertIsNone(ca.review(cand(), rugrep(), 0.2))
+            rejects = [e["message"] for e in store.events() if e["agent"] == "Critic"]
+            self.assertEqual(len(rejects), 1)
+            self.assertIn("losses in a row", rejects[0])
+            self.assertIn("will check again", rejects[0])
+            self.assertTrue(ca.waiting(cand()))
+            self.assertIn("waiting: TOK", store.get("agent:Critic")["summary"])
+
+
 if __name__ == "__main__":
     unittest.main()

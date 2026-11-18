@@ -261,11 +261,15 @@ class Sizer:
     def __init__(self, cfg: BotConfig, log: Logger):
         self.r = cfg.risk
         self.log = log
+        self._last: dict[str, tuple[float, str]] = {}
 
     def run(self, cand: TokenCandidate, acc: Account, tx_fee_sol: float) -> float | None:
         size, why = size_position(acc, self.r, tx_fee_sol)
-        self.log.log("Sizer", "info" if size else "warn", f"{cand.symbol}: {why}" if size else f"{cand.symbol} skip: {why}",
-                     cand.mint)
+        msg = f"{cand.symbol}: {why}" if size else f"{cand.symbol} skip: {why}"
+        last = self._last.get(cand.mint)
+        if last is None or last[1] != msg or time.time() - last[0] > 300:   # no repeat every cycle
+            self._last[cand.mint] = (time.time(), msg)
+            self.log.log("Sizer", "info" if size else "warn", msg, cand.mint)
         self.log.status("Sizer", why if size else f"skip: {why}")
         return size
 
@@ -278,15 +282,24 @@ class CriticAgent:
         self.critic = critic
         self.store = store
         self.log = log
-        self._soft: dict[str, float] = {}   # mint -> ts of last soft reject (don't re-judge every tick)
+        self._soft: dict[str, tuple[float, str]] = {}   # mint -> (ts, reason) of last soft reject
         self.approved = self.rejected = 0
+
+    def waiting(self, c: TokenCandidate) -> bool:
+        """Soft-rejected in the last 2 min (e.g. losing-streak pause, too many open positions):
+        skip it before the Sizer instead of re-sizing it every cycle."""
+        hit = self._soft.get(c.mint)
+        if hit and time.time() - hit[0] < 120:
+            self.log.status(self.name, f"waiting: {c.symbol} ({hit[1]})", "ok")
+            return True
+        return False
 
     def review(self, c: TokenCandidate, rep: RugReport, size_sol: float) -> str | None:
         """Returns the verdict text for the trade reason if approved, else None."""
         if not self.cfg.enabled:
             return "critic off"
         now = time.time()
-        if now - self._soft.get(c.mint, 0) < 120:
+        if self.waiting(c):
             return None
         v = self.critic.review(c, rep, size_sol, self.store.open_positions(), self.store.closed_positions(10))
         self.store.record_critic(c, v.approved, size_sol, v.reasons, v.notes)
@@ -301,8 +314,9 @@ class CriticAgent:
                 bl.add(c.mint)
                 self.store.set("blacklist", sorted(bl)[-5000:])
             else:
-                self._soft[c.mint] = now
-            self.log.log(self.name, "warn", f"{c.symbol} REJECT: {'; '.join(v.reasons)}", c.mint)
+                self._soft[c.mint] = (now, "; ".join(v.reasons))
+            self.log.log(self.name, "warn", f"{c.symbol} REJECT: {'; '.join(v.reasons)}"
+                         + ("" if v.hard else " (not blacklisted, will check again in 2 min)"), c.mint)
         cnt = self.store.critic_counts()
         self.log.status(self.name, f"{cnt['approved']} approved, {cnt['rejected']} rejected")
         return v.summary() if v.approved else None
@@ -593,6 +607,8 @@ class Pipeline:
             need = min(self.cfg.min_jupiter_budget_for_entry, jup.capacity) if jup else 0.0
             budget = lambda: self.limits.available("jupiter") >= need
             for cand, signal, rep in self.rug.run(picked, min(probe, self.cfg.risk.max_position_sol), budget):
+                if self.critic.waiting(cand):
+                    continue
                 acc = self.equity.account()
                 size = self.sizer.run(cand, acc, self.exe.tx_fee_sol)
                 if not size:
