@@ -36,7 +36,7 @@ Bot nemá pevný interval. Beží tak rýchlo, ako dovolia limity, ktoré sú v 
 | GeckoTerminal | 10 | oficiálne 30 req/min, v praxi 429 skôr; pri 429 pauza 30 s, 1 min, 2 min… až 10 min |
 | PumpPortal | websocket | jedno trvalé spojenie, bez limitu na požiadavky |
 | RugCheck | 20 | bez zverejneného limitu; summary pre RugCheck agenta, full report pre Critica |
-| Solana RPC | 90 | verejné RPC je prísne; s voliteľným free Helius kľúčom ~500. Critic pridáva ~10 volaní na kandidáta (čerstvé peňaženky) |
+| Solana RPC | 40 (vlastné RPC: 300) | verejné RPC je prísne; s voliteľným free Helius kľúčom ~500. Critic pridáva ~10 volaní na kandidáta (čerstvé peňaženky) |
 
 - Každé API má vlastný token-bucket limiter, pri HTTP 429 sa API pozastaví podľa `Retry-After` (inak 30 s).
 - Otvorené pozície majú prednosť: preceňujú sa v rámci `jupiter_mark_share` (pri 5 pozíciách cca každých 9 s)

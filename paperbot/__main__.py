@@ -24,7 +24,8 @@ from .store import Store
 
 
 def build(cfg, mock: bool, seed: int):
-    limits = Limits() if mock else Limits(asdict(cfg.rate_limits))
+    rpm = {k: v for k, v in asdict(cfg.rate_limits).items() if k != "rpc_private"}
+    limits = Limits() if mock else Limits(rpm)
     if mock:
         from .mock import MockWorld
         world = MockWorld(seed=seed)

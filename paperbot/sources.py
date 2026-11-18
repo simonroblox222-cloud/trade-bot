@@ -281,6 +281,7 @@ class SolanaRpc:
         self.api = api
         self.limiter = (limits or Limits()).get("rpc")
         self._id = 0
+        self._holders = TTLCache(90)   # rug check and Critic ask for the same holders: one lookup
 
     def _call(self, method: str, params: list):
         self._id += 1
@@ -322,6 +323,14 @@ class SolanaRpc:
         return len(res or [])
 
     def largest_holders(self, mint: str) -> list[Holder]:
+        cached = self._holders.get(mint)
+        if cached is not None:
+            return cached
+        holders = self._largest_holders(mint)
+        self._holders.put(mint, holders)
+        return holders
+
+    def _largest_holders(self, mint: str) -> list[Holder]:
         try:
             res = self._call("getTokenLargestAccounts", [mint])
             accounts = res.get("value", [])[:20]

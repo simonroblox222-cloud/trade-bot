@@ -1101,5 +1101,22 @@ class HypeSignalTests(unittest.TestCase):
         self.assertFalse(sc.signal(cand(**flat, has_x=True, pf_replies=150, boosts_active=5), now)[0])
 
 
+class RpcLimitTests(unittest.TestCase):
+    def test_own_rpc_gets_higher_limit_public_stays_gentle(self):
+        with mock.patch.dict(os.environ, {"PAPERBOT_RPC_URL": "https://mainnet.helius-rpc.com/?api-key=x"}):
+            self.assertEqual(C.load_config(None).rate_limits.rpc, 300)
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PAPERBOT_RPC_URL", None)
+            self.assertEqual(C.load_config(None).rate_limits.rpc, 40)
+
+    def test_holders_looked_up_once_for_rugcheck_and_critic(self):
+        rpc = sources.SolanaRpc(C.ApiConfig())
+        res = [{"result": {"value": [{"address": "a1", "amount": "5"}]}},
+               {"result": {"value": [{"data": {"parsed": {"info": {"owner": "o1"}}}}]}}]
+        with mock.patch.object(sources, "post_json", side_effect=res) as pj:
+            self.assertEqual(rpc.largest_holders(MINT), rpc.largest_holders(MINT))
+        self.assertEqual(pj.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

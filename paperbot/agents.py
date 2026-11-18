@@ -216,6 +216,7 @@ class RugGuard:
         self.checker = checker
         self.store = store
         self.log = log
+        self._postponed: dict[str, float] = {}
 
     def run(self, picked: list[tuple[TokenCandidate, str]], probe_sol: float, has_budget=lambda: True):
         passed, failed, deferred = [], 0, 0
@@ -232,7 +233,10 @@ class RugGuard:
             rep = self.checker.check(c, int(probe_sol * LAMPORTS_PER_SOL))
             if rep.transient:
                 deferred += 1
-                self.log.log(self.name, "warn", f"{c.symbol} check postponed: {rep.reasons[0]}", c.mint)
+                if time.time() - self._postponed.get(c.mint, 0) > 120:   # one line, retried every cycle
+                    self._postponed[c.mint] = time.time()
+                    self.log.log(self.name, "warn", f"{c.symbol} check postponed, retrying automatically: "
+                                 f"{rep.reasons[0]}", c.mint)
                 continue
             self.store.record_rugcheck(rep, c)
             if rep.passed:

@@ -68,7 +68,8 @@ class RateLimitConfig:
     pumpfun: float = 20               # unofficial API, be gentle
     geckoterminal: float = 10         # documented 30 rpm, but shared per IP and 429s early; pools change slowly
     rugcheck: float = 20              # no published limit for keyless use
-    rpc: float = 90                   # public mainnet-beta is strict, esp. getTokenLargestAccounts
+    rpc: float = 40                   # public mainnet-beta is strict (429s early, esp. getTokenLargestAccounts)
+    rpc_private: float = 300          # used instead when solana_rpc_url is your own endpoint (free Helius: 10 req/s)
 
 
 @dataclass
@@ -266,6 +267,8 @@ def load_config(path: str | Path | None) -> BotConfig:
         with open(path, "rb") as fh:
             _apply(cfg, tomllib.load(fh))
     _apply_env(cfg)
+    if "api.mainnet-beta.solana.com" not in cfg.api.solana_rpc_url and cfg.rate_limits.rpc == RateLimitConfig.rpc:
+        cfg.rate_limits.rpc = cfg.rate_limits.rpc_private   # own RPC (e.g. free Helius key): faster rug checks
     if cfg.mode != "paper":
         raise ValueError("Only mode = \"paper\" is supported. Live trading is disabled in code.")
     return cfg
