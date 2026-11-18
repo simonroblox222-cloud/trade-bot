@@ -30,3 +30,7 @@ Denná stratégia sa dá spúšťať automaticky cez GitHub Actions (`.github/wo
 ## Úprimne o ziskovosti
 
 Väčšina day tradingových stratégií po poplatkoch a sklze neporazí obyčajné držanie indexu. Preto: každá stratégia sa najprv overí backtestom s rozdelením na in-sample a out-of-sample obdobie, potom aspoň 1 až 3 mesiace na paper účte. Do skutočných peňazí nič nejde bez výslovného súhlasu.
+
+## Výskum: Solana memecoiny
+
+V `research/solana/` je prehľad open-source nástrojov (Jupiter, Raydium, Jito, Helius, pump.fun, rug check, paper trading) a skript na ich lokálne stiahnutie. Zatiaľ len podklady, nie súčasť bota.
