@@ -838,7 +838,7 @@ class BlockedApiTests(unittest.TestCase):
             first = d.candidates()
             self.assertEqual([c.mint for c in first], [MINT])
             self.assertEqual(len(d.last_errors), 1)
-            self.assertIn("paused 15 min", d.last_errors[0])
+            self.assertIn("skipped for 15 min", d.last_errors[0])
             self.assertIn("DexScreener", d.last_errors[0])
             for _ in range(5):   # later ticks: no new request, no new error
                 self.assertEqual([c.mint for c in d.candidates()], [MINT])
@@ -856,7 +856,7 @@ class BlockedApiTests(unittest.TestCase):
             store = Store(os.path.join(d, "t.sqlite"))
             disc = mock.Mock()
             disc.candidates.return_value = []
-            disc.last_errors = ["pumpfun: HTTP 403 from frontend-api-v3.pump.fun: Cloudflare bot check, paused 15 min"]
+            disc.last_errors = ["pumpfun: HTTP 403 from frontend-api-v3.pump.fun: Cloudflare bot check. Only this source is skipped for 15 min"]
             sc = Scanner(C.BotConfig(), disc, store, Logger(store, echo=False))
             for _ in range(10):
                 sc.run(set())
@@ -942,7 +942,7 @@ class WatchlistTests(unittest.TestCase):
             sc = Scanner(C.BotConfig(), disc, store, Logger(store, echo=False))
             sc._summary_at -= 61
             sc.run(set())
-            msg = [e["message"] for e in store.events() if "scans" in e["message"]][0]
+            msg = [e["message"] for e in store.events() if "pairs checked" in e["message"]][0]
         self.assertIn("watchlist 40", msg)
         self.assertIn("liq 1", msg)
         self.assertIn("m5 1", msg)

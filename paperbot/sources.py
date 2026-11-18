@@ -139,8 +139,9 @@ class MarketDiscovery:
                 pass  # budget exhausted this tick: reuse cached list
             except HttpError as e:
                 if e.blocked_s:
-                    self.last_errors.append(f"{name}: {e}, paused {e.blocked_s / 60:.0f} min"
-                                            + ("; new pump.fun pairs still come via DexScreener" if name == "pumpfun" else ""))
+                    self.last_errors.append(f"{name}: {e}. Only this source is skipped for {e.blocked_s / 60:.0f} min,"
+                                            " the bot keeps running"
+                                            + (" (pump.fun pairs still come via DexScreener)" if name == "pumpfun" else ""))
                     self._mints_cache.pop(name, None)
                 else:
                     self.last_errors.append(f"{name}: {e}")

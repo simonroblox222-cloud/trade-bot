@@ -76,7 +76,8 @@ class Scanner:
         self._err_logged: dict[str, float] = {}
         self._misses: dict[str, int] = {}
         self._scans = 0
-        self._summary_at = time.time()
+        self._summary_at = 0.0          # first summary right after the first scan, then once a minute
+        self._started = time.time()
 
     def reset_streaks(self) -> None:
         """Scanning paused (positions full / halted): confirmations must start over."""
@@ -143,12 +144,14 @@ class Scanner:
         self.log.status("Scanner", f"{len(cands)} pairs seen, {len(picked)} confirmed, {waiting} confirming")
         self._scans += 1
         if now - self._summary_at >= 60:   # one line a minute, so a quiet bot is visibly alive
-            st = getattr(self.discovery, "stats", {}) or {}
+            st = getattr(self.discovery, "stats", None)
+            st = st if isinstance(st, dict) else {}
             top = sorted(self._misses.items(), key=lambda kv: kv[1], reverse=True)[:4]
             per = max(self._scans, 1)
             misses = ", ".join(f"{k} {v / per:.0f}" for k, v in top) or "none"
             self.log.log("Scanner", "info",
-                         f"last {self._scans} scans: ~{len(cands)} pairs checked"
+                         (f"running, {(now - self._started) / 60:.0f} min: " if self._scans > 1 else "first scan: ")
+                         + f"{self._scans} scan(s), ~{len(cands)} pairs checked"
                          + (f" (watchlist {st['watchlist']})" if st.get("watchlist") else "")
                          + f", now {len(passing)} pass the signal ({waiting} still confirming)."
                          f" Most common misses per scan: {misses}")
@@ -506,6 +509,18 @@ class Pipeline:
         store.set("mode", exe.mode)
 
     def tick(self) -> Account:
+        started = time.time()
+        try:
+            return self._tick()
+        finally:
+            took = time.time() - started
+            if took > 20:  # say why a cycle was slow instead of looking frozen
+                waits = {n: v.get("paused_s") for n, v in self.limits.snapshot().items() if v.get("paused_s")}
+                self.log.log("Logger", "warn", f"cycle took {took:.0f}s"
+                             + (f" (APIs pausing: {', '.join(f'{n} {s:.0f}s' for n, s in waits.items())})" if waits
+                                else " (waiting for API limits / slow responses)"))
+
+    def _tick(self) -> Account:
         marks = self.equity.mark()
         self.executor.manage_exits(marks)
         acc = self.equity.check_day()
