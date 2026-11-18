@@ -46,6 +46,8 @@ class RateLimiter:
         self.block_streak = 0
         self.block_reason = ""
         self.streak_429 = 0
+        self.down_until = 0.0
+        self.timeouts = 0
 
     def _refill(self, now: float) -> None:
         self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
@@ -63,6 +65,8 @@ class RateLimiter:
         while True:
             with self.lock:
                 now = self.clock()
+                if now < self.down_until:   # just timed out: fail fast instead of stalling the cycle
+                    raise RateLimited(self.name, self.down_until - now)
                 self._refill(now)
                 if now >= self.paused_until and self.tokens >= 1:
                     self.tokens -= 1
@@ -99,8 +103,17 @@ class RateLimiter:
             self.tokens = 0.0
             return secs
 
+    def went_down(self, seconds: float = 15.0) -> None:
+        """Timeout / connection error: skip this API for a few seconds so one slow API can't
+        make every following call in the cycle wait for its own timeout."""
+        with self.lock:
+            self.timeouts += 1
+            self.down_until = max(self.down_until, self.clock() + seconds)
+
     def succeeded(self) -> None:
         self.streak_429 = 0
+        self.down_until = 0.0
+        self.timeouts = 0
         if self.block_streak:
             with self.lock:
                 self.block_streak = 0
@@ -112,7 +125,7 @@ class RateLimiter:
             while self.recent and now - self.recent[0] > 60:
                 self.recent.popleft()
             return {"limit_rpm": self.per_minute, "last_min": len(self.recent), "total": self.total,
-                    "http_429": self.http_429, "http_403": self.http_403,
+                    "http_429": self.http_429, "http_403": self.http_403, "timeouts": self.timeouts,
                     "blocked": self.block_reason if now < self.paused_until else "", "errors": self.errors, "waited_s": round(self.waited_s, 1),
                     "paused_s": round(max(0.0, self.paused_until - now), 1)}
 
@@ -141,8 +154,17 @@ class Limits:
             self.tokens = 0.0
             return secs
 
+    def went_down(self, seconds: float = 15.0) -> None:
+        """Timeout / connection error: skip this API for a few seconds so one slow API can't
+        make every following call in the cycle wait for its own timeout."""
+        with self.lock:
+            self.timeouts += 1
+            self.down_until = max(self.down_until, self.clock() + seconds)
+
     def succeeded(self) -> None:
         self.streak_429 = 0
+        self.down_until = 0.0
+        self.timeouts = 0
         if self.block_streak:
             with self.lock:
                 self.block_streak = 0

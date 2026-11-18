@@ -52,8 +52,8 @@ def _request(req: urllib.request.Request, url: str, timeout: float, limiter: Rat
             if not block:
                 raise          # caller reuses cached data
             # paused for a long time (429/403 backoff): fail fast as an outage, don't stall the bot
-            raise HttpError(f"{_host(url)} paused for {e.paused_s:.0f}s ({limiter.block_reason or 'rate limit'})",
-                            None) from e
+            why = limiter.block_reason or ("timed out, retrying shortly" if limiter.down_until else "rate limit")
+            raise HttpError(f"{_host(url)} paused for {e.paused_s:.0f}s ({why})", None) from e
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
@@ -77,6 +77,8 @@ def _request(req: urllib.request.Request, url: str, timeout: float, limiter: Rat
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
         if limiter is not None:
             limiter.errors += 1
+            if not isinstance(e, json.JSONDecodeError):
+                limiter.went_down()
         raise HttpError(f"{type(e).__name__} from {_host(url)}: {str(e)[:100]}") from e
 
 

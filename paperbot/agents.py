@@ -565,10 +565,12 @@ class Pipeline:
         finally:
             took = time.time() - started
             if took > 20:  # say why a cycle was slow instead of looking frozen
-                waits = {n: v.get("paused_s") for n, v in self.limits.snapshot().items() if v.get("paused_s")}
+                # sources paused for minutes (e.g. pump.fun behind Cloudflare) are skipped, not waited for
+                waits = {n: v.get("paused_s") for n, v in self.limits.snapshot().items()
+                         if v.get("paused_s") and v.get("paused_s") < 120}
                 self.log.log("Logger", "warn", f"cycle took {took:.0f}s"
                              + (f" (APIs pausing: {', '.join(f'{n} {s:.0f}s' for n, s in waits.items())})" if waits
-                                else " (waiting for API limits / slow responses)"))
+                                else " (slow API responses / timeouts; slow APIs are skipped for 15 s after a timeout)"))
 
     def _tick(self) -> Account:
         force = self.equity.quick_check(self.scanner.discovery)

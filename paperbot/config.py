@@ -54,7 +54,7 @@ class ApiConfig:
     # pass the signal. Keep re-checking every mint we've seen for this long (DexScreener pairs).
     watchlist_hours: float = 12.0
     watchlist_size: int = 240           # mints re-checked per scan (30 per DexScreener call)
-    timeout_s: float = 10.0
+    timeout_s: float = 6.0             # a slow API must not stall the whole cycle
 
 
 @dataclass

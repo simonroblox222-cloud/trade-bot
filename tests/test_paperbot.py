@@ -1178,5 +1178,24 @@ class QuickStopTests(unittest.TestCase):
             self.assertIn(1, eq.mark(force=True))          # forced: re-priced now
 
 
+class SlowApiTests(unittest.TestCase):
+    def test_timeout_makes_next_calls_fail_fast(self):
+        clk = FakeClock()
+        lim = RateLimiter("jupiter", 55, clock=clk, sleep=clk.sleep)
+        with mock.patch.object(H.urllib.request, "urlopen", side_effect=TimeoutError("timed out")) as op:
+            with self.assertRaises(H.HttpError):
+                H.get_json("https://lite-api.jup.ag/q", limiter=lim)
+            for _ in range(5):
+                with self.assertRaises(H.HttpError) as cm:
+                    H.get_json("https://lite-api.jup.ag/q", limiter=lim)
+            self.assertEqual(op.call_count, 1)            # the other 5 never waited for a timeout
+            self.assertIn("timed out", str(cm.exception))
+            self.assertIsNone(cm.exception.status)        # = outage: no write-off, no blacklist
+            clk.t += 16
+            with self.assertRaises(H.HttpError):
+                H.get_json("https://lite-api.jup.ag/q", limiter=lim)
+            self.assertEqual(op.call_count, 2)            # tried again after 15 s
+
+
 if __name__ == "__main__":
     unittest.main()
