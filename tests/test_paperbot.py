@@ -506,6 +506,26 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(cm.exception.status, 429)
         self.assertAlmostEqual(lim.snapshot()["paused_s"], 12.0, delta=0.1)
 
+    def test_repeated_429_backs_off_longer_with_short_message(self):
+        import io
+        import urllib.error
+        from paperbot import http as H
+        from paperbot.ratelimit import RateLimiter
+        clk = FakeClock()
+        lim = RateLimiter("geckoterminal", 10, clock=clk, sleep=clk.sleep)
+        body = b'{"status":{"error_code":429,"error_message":"You\'ve exceeded the Rate Limit. Please visit https://x"}}'
+        pauses = []
+        for _ in range(4):
+            err = urllib.error.HTTPError("u", 429, "Too Many", {}, io.BytesIO(body))
+            with mock.patch.object(H.urllib.request, "urlopen", side_effect=err):
+                with self.assertRaises(H.HttpError) as cm:
+                    H.get_json("https://api.geckoterminal.com/api/v2/x", limiter=lim, block=False)
+            self.assertNotIn("{", str(cm.exception))
+            pauses.append(lim.snapshot()["paused_s"])
+            clk.t += pauses[-1] + 1
+        self.assertEqual(pauses, [30.0, 60.0, 120.0, 240.0])
+        self.assertIn("rate limited, paused 240s", str(cm.exception))
+
     def test_discovery_reuses_cache_when_rate_limited(self):
         from paperbot.ratelimit import Limits
         limits = Limits({"dexscreener_profiles": 6, "pumpfun": 6})   # 1 call burst each

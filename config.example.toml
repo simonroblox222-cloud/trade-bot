@@ -29,7 +29,7 @@ jupiter = 55
 dexscreener_profiles = 55
 dexscreener_pairs = 250
 pumpfun = 20
-geckoterminal = 25
+geckoterminal = 10
 rugcheck = 20
 rpc = 90                            # s free Helius kľúčom pokojne 500
 

@@ -33,7 +33,7 @@ Bot nemá pevný interval. Beží tak rýchlo, ako dovolia limity, ktoré sú v 
 | Jupiter quote | 55 | úzke hrdlo; 60 % ide na preceňovanie otvorených pozícií, zvyšok na nové vstupy |
 | DexScreener profiles / pairs | 55 / 250 | |
 | pump.fun | 20 | neoficiálne API |
-| GeckoTerminal | 25 | free 30 req/min, jedna stránka na volanie |
+| GeckoTerminal | 10 | oficiálne 30 req/min, v praxi 429 skôr; pri 429 pauza 30 s, 1 min, 2 min… až 10 min |
 | PumpPortal | websocket | jedno trvalé spojenie, bez limitu na požiadavky |
 | RugCheck | 20 | bez zverejneného limitu; summary pre RugCheck agenta, full report pre Critica |
 | Solana RPC | 90 | verejné RPC je prísne; s voliteľným free Helius kľúčom ~500. Critic pridáva ~10 volaní na kandidáta (čerstvé peňaženky) |

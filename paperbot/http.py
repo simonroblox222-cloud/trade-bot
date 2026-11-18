@@ -68,11 +68,11 @@ def _request(req: urllib.request.Request, url: str, timeout: float, limiter: Rat
             why = "Cloudflare bot check" if is_bot_challenge(e.code, body, e.headers) else "forbidden"
             secs = limiter.forbid(f"HTTP {e.code} {why}") if limiter is not None else 0.0
             raise HttpError(f"HTTP {e.code} from {host}: {why}", e.code, blocked_s=secs) from e
+        if e.code == 429:
+            secs = limiter.penalize(_retry_after(e)) if limiter is not None else 0.0
+            raise HttpError(f"HTTP 429 from {host}: rate limited, paused {secs:.0f}s", 429) from e
         if limiter is not None:
-            if e.code == 429:
-                limiter.penalize(_retry_after(e))
-            else:
-                limiter.errors += 1
+            limiter.errors += 1
         raise HttpError(f"HTTP {e.code} from {host}: {_brief(body)}", e.code) from e
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
         if limiter is not None:

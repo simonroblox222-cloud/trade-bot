@@ -45,6 +45,7 @@ class RateLimiter:
         self.http_403 = 0
         self.block_streak = 0
         self.block_reason = ""
+        self.streak_429 = 0
 
     def _refill(self, now: float) -> None:
         self.tokens = min(self.capacity, self.tokens + (now - self.updated) * self.rate)
@@ -76,12 +77,16 @@ class RateLimiter:
             self.waited_s += wait
             self.sleep(wait)
 
-    def penalize(self, seconds: float) -> None:
-        """Called on HTTP 429: stop using this API for a while."""
+    def penalize(self, seconds: float) -> float:
+        """Called on HTTP 429: stop using this API for a while. Repeated 429s back off longer
+        (Retry-After or 30 s, then 1 min, 2 min ... 10 min); a success resets it. Returns the pause in seconds."""
         with self.lock:
             self.http_429 += 1
-            self.paused_until = max(self.paused_until, self.clock() + seconds)
+            secs = seconds if self.streak_429 == 0 else max(seconds, min(600.0, 30.0 * 2 ** self.streak_429))
+            self.streak_429 += 1
+            self.paused_until = max(self.paused_until, self.clock() + secs)
             self.tokens = 0.0
+            return secs
 
     def forbid(self, reason: str) -> float:
         """Called on HTTP 403: back off for a long, growing time. Returns the pause in seconds."""
@@ -95,6 +100,7 @@ class RateLimiter:
             return secs
 
     def succeeded(self) -> None:
+        self.streak_429 = 0
         if self.block_streak:
             with self.lock:
                 self.block_streak = 0
@@ -136,6 +142,7 @@ class Limits:
             return secs
 
     def succeeded(self) -> None:
+        self.streak_429 = 0
         if self.block_streak:
             with self.lock:
                 self.block_streak = 0

@@ -66,7 +66,7 @@ class RateLimitConfig:
     dexscreener_profiles: float = 55  # token-profiles: 60 rpm
     dexscreener_pairs: float = 250    # tokens/pairs: 300 rpm
     pumpfun: float = 20               # unofficial API, be gentle
-    geckoterminal: float = 25         # free public API: 30 rpm
+    geckoterminal: float = 10         # documented 30 rpm, but shared per IP and 429s early; pools change slowly
     rugcheck: float = 20              # no published limit for keyless use
     rpc: float = 90                   # public mainnet-beta is strict, esp. getTokenLargestAccounts
 
