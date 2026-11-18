@@ -33,16 +33,20 @@ def size_position(acc: Account, r: RiskConfig, tx_fee_sol: float) -> tuple[float
                             f"exposure after {(acc.open_cost + size) / acc.equity * 100:.1f}%")
 
 
-def exit_reason(cost: float, value: float, peak: float, held_min: float, r: RiskConfig) -> str | None:
+def exit_reason(cost: float, value: float, peak: float, held_min: float, r: RiskConfig,
+                runner: bool = False) -> str | None:
+    """`runner`: profit was already taken in part; the rest rides with a wider trailing stop
+    and no time limit while it's in profit (so it can catch a big move)."""
     pnl = (value / cost - 1) * 100 if cost else 0.0
     if pnl <= -r.stop_loss_pct:
         return f"stop-loss {pnl:+.1f}% (limit -{r.stop_loss_pct}%)"
-    if pnl >= r.take_profit_pct:
+    if r.take_profit_pct > 0 and pnl >= r.take_profit_pct:
         return f"take-profit {pnl:+.1f}% (target +{r.take_profit_pct}%)"
-    if peak >= cost * (1 + r.trailing_arm_pct / 100) and value <= peak * (1 - r.trailing_stop_pct / 100):
+    trail = r.runner_trailing_stop_pct if runner else r.trailing_stop_pct
+    if peak >= cost * (1 + r.trailing_arm_pct / 100) and value <= peak * (1 - trail / 100):
         return (f"trailing stop {pnl:+.1f}% (peak {(peak / cost - 1) * 100:+.1f}%, "
-                f"-{r.trailing_stop_pct}% from peak)")
-    if held_min >= r.max_hold_minutes:
+                f"-{trail:g}% from peak{', runner' if runner else ''})")
+    if held_min >= r.max_hold_minutes and not (runner and pnl > 0):
         return f"time exit after {held_min:.0f} min at {pnl:+.1f}%"
     return None
 

@@ -168,12 +168,13 @@ class RiskConfig:
     close_all_on_daily_limit: bool = False
     # fast in, fast out: bank small gains and move on to the next token
     stop_loss_pct: float = 12.0
-    take_profit_pct: float = 25.0         # sell everything that's left
+    take_profit_pct: float = 0.0          # sell everything at this gain; 0 = never, let the rest run
     # sell in parts on the way up: [gain %, share of the tokens still held]. The rest rides
     # with the trailing stop. [] = off.
-    partial_take_profits: list = field(default_factory=lambda: [[12.0, 0.5]])
+    partial_take_profits: list = field(default_factory=lambda: [[12.0, 0.5], [40.0, 0.3]])
     min_partial_sol: float = 0.03         # skip a partial sale smaller than this (fees)
     trailing_stop_pct: float = 7.0        # from peak, once armed
+    runner_trailing_stop_pct: float = 20.0  # after the first partial sale: room for a big move
     trailing_arm_pct: float = 10.0        # arm trailing after +X %
     max_hold_minutes: float = 30.0
     token_cooldown_minutes: float = 20.0

@@ -421,7 +421,7 @@ class Executor:
             # whole position = what's still held + what partial sales already brought in
             whole = fill.net_sol + (pos.get("partial_proceeds_sol") or 0.0)
             why = exit_reason(pos["cost_sol"], whole, pos["peak_value_sol"],
-                              (now - pos["opened_at"]) / 60, self.r)
+                              (now - pos["opened_at"]) / 60, self.r, runner=(pos.get("tp_level") or 0) > 0)
             if why:
                 self.sell(pos, fill, why)
                 continue

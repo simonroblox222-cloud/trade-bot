@@ -88,8 +88,9 @@ daily_loss_limit_pct = 5
 close_all_on_daily_limit = false
 # rýchlo dnu, rýchlo von: zober malý zisk a choď na ďalší token
 stop_loss_pct = 12
-take_profit_pct = 25                        # predá všetko, čo zostalo
-partial_take_profits = [[12, 0.5]]          # pri +12 % predá polovicu; [] = vypnuté
+take_profit_pct = 0                         # predá všetko pri tomto zisku; 0 = nikdy, zvyšok nechá bežať
+partial_take_profits = [[12, 0.5], [40, 0.3]]   # +12 % predá polovicu, +40 % 30 % zvyšku; [] = vypnuté
+runner_trailing_stop_pct = 20               # zvyšok po prvom predaji: predá až keď padne 20 % z vrcholu
 min_partial_sol = 0.03
 trailing_arm_pct = 10
 trailing_stop_pct = 7

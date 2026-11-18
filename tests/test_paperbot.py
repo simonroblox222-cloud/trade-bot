@@ -1134,5 +1134,17 @@ class FreshTokenSocialTests(unittest.TestCase):
         self.assertIn("socials not required yet", out[0][1])
 
 
+class RunnerTests(unittest.TestCase):
+    def test_runner_keeps_going_after_partial_and_has_no_time_limit_in_profit(self):
+        r = C.RiskConfig()
+        # +200 % and 2 h old: a runner in profit stays, a normal position would time out
+        self.assertIsNone(exit_reason(1.0, 3.0, 3.1, 120, r, runner=True))
+        self.assertIn("time exit", exit_reason(1.0, 1.05, 1.05, 120, r))
+        # runner trails 20 % from peak, not 7 %
+        self.assertIsNone(exit_reason(1.0, 2.6, 3.0, 5, r, runner=True))
+        self.assertIn("runner", exit_reason(1.0, 2.3, 3.0, 5, r, runner=True))
+        self.assertIsNone(exit_reason(1.0, 51.0, 51.0, 5, r, runner=True))   # +5000 %: no take-profit cap
+
+
 if __name__ == "__main__":
     unittest.main()
