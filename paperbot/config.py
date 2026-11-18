@@ -6,6 +6,7 @@ mode later requires a deliberate code change (and implementing LiveExecutor).
 """
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -31,6 +32,19 @@ class ApiConfig:
     use_dexscreener: bool = True
     use_pumpfun: bool = True
     timeout_s: float = 10.0
+
+
+@dataclass
+class RateLimitConfig:
+    """Requests per minute per API. Defaults sit just under the free plans (Nov 2026,
+    verify against current docs). 0 = unlimited. With a free Helius/QuickNode RPC
+    raise `rpc` (e.g. Helius free ~10 req/s -> 500)."""
+    jupiter: float = 55              # free tier ~60 rpm
+    dexscreener_profiles: float = 55  # token-profiles: 60 rpm
+    dexscreener_pairs: float = 250    # tokens/pairs: 300 rpm
+    pumpfun: float = 20               # unofficial API, be gentle
+    rugcheck: float = 20              # no published limit for keyless use
+    rpc: float = 90                   # public mainnet-beta is strict, esp. getTokenLargestAccounts
 
 
 @dataclass
@@ -105,11 +119,18 @@ class StrategyConfig:
 @dataclass
 class BotConfig:
     mode: str = "paper"
-    tick_seconds: float = 20.0
+    # minimum pause between cycles; the real pace is set by the API rate limits
+    tick_seconds: float = 2.0
+    # skip new rug checks when Jupiter budget is below this (keeps exits responsive)
+    min_jupiter_budget_for_entry: float = 3.0
+    # share of the Jupiter rate limit used to re-price open positions; the rest goes to new entries.
+    # e.g. 55 rpm * 0.6 = 33 marks/min -> with 5 open positions each is re-priced every ~9 s
+    jupiter_mark_share: float = 0.6
     db_path: str = "paperbot.sqlite"
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8787
     api: ApiConfig = field(default_factory=ApiConfig)
+    rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     rug: RugConfig = field(default_factory=RugConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
@@ -127,11 +148,30 @@ def _apply(obj, data: dict) -> None:
             setattr(obj, key, value)
 
 
+ENV_OVERRIDES = {
+    # env var -> ApiConfig field. Keeps RPC/API keys out of files in the repo.
+    "PAPERBOT_RPC_URL": "solana_rpc_url",
+    "JUPITER_API_KEY": "jupiter_api_key",
+    "PAPERBOT_JUPITER_QUOTE_URL": "jupiter_quote_url",
+}
+
+
+def _apply_env(cfg: "BotConfig") -> None:
+    for f in fields(cfg.api):
+        v = getattr(cfg.api, f.name)
+        if isinstance(v, str) and "$" in v:
+            setattr(cfg.api, f.name, os.path.expandvars(v))  # e.g. "...?api-key=${HELIUS_API_KEY}"
+    for env, attr in ENV_OVERRIDES.items():
+        if os.environ.get(env):
+            setattr(cfg.api, attr, os.environ[env])
+
+
 def load_config(path: str | Path | None) -> BotConfig:
     cfg = BotConfig()
     if path:
         with open(path, "rb") as fh:
             _apply(cfg, tomllib.load(fh))
+    _apply_env(cfg)
     if cfg.mode != "paper":
         raise ValueError("Only mode = \"paper\" is supported. Live trading is disabled in code.")
     return cfg

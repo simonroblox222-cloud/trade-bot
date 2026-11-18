@@ -301,5 +301,132 @@ class SourceParseTests(unittest.TestCase):
         self.assertIn("transferFeeConfig", mi.extensions)
 
 
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+class RateLimitTests(unittest.TestCase):
+    def test_bucket_paces_to_limit(self):
+        from paperbot.ratelimit import RateLimiter
+        clk = FakeClock()
+        lim = RateLimiter("jup", 60, clock=clk, sleep=clk.sleep)   # 1/s, burst 6
+        for _ in range(66):
+            lim.acquire()
+        # 6 burst + 60 more at 1/s => ~60 s elapsed, never faster than the limit
+        self.assertAlmostEqual(clk.t - 1000.0, 60.0, delta=0.5)
+        self.assertEqual(lim.total, 66)
+
+    def test_non_blocking_and_penalty(self):
+        from paperbot.ratelimit import RateLimited, RateLimiter
+        clk = FakeClock()
+        lim = RateLimiter("x", 6, clock=clk, sleep=clk.sleep)       # capacity 1
+        lim.acquire(block=False)
+        with self.assertRaises(RateLimited):
+            lim.acquire(block=False)
+        lim.penalize(30)
+        self.assertEqual(lim.available(), 0.0)
+        lim.acquire()                                                # waits out the pause
+        self.assertGreaterEqual(clk.t - 1000.0, 30.0)
+        self.assertEqual(lim.snapshot()["http_429"], 1)
+
+    def test_http_429_pauses_limiter(self):
+        import io
+        import urllib.error
+        from paperbot import http as H
+        from paperbot.ratelimit import RateLimiter
+        clk = FakeClock()
+        lim = RateLimiter("jup", 60, clock=clk, sleep=clk.sleep)
+        err = urllib.error.HTTPError("u", 429, "Too Many", {"Retry-After": "12"}, io.BytesIO(b"slow down"))
+        with mock.patch.object(H.urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(H.HttpError) as cm:
+                H.get_json("https://example.invalid/q", limiter=lim)
+        self.assertEqual(cm.exception.status, 429)
+        self.assertAlmostEqual(lim.snapshot()["paused_s"], 12.0, delta=0.1)
+
+    def test_discovery_reuses_cache_when_rate_limited(self):
+        from paperbot.ratelimit import Limits
+        limits = Limits({"dexscreener_profiles": 6, "pumpfun": 6})   # 1 call burst each
+        calls = []
+
+        def fake(url, *a, **k):
+            lim = k.get("limiter")
+            if lim is not None:
+                lim.acquire(block=k.get("block", True))
+            calls.append(url)
+            if "token-profiles" in url:
+                return [{"chainId": "solana", "tokenAddress": "A"}]
+            if "pump.fun" in url:
+                return [{"mint": "B"}]
+            return [{"baseToken": {"address": m, "symbol": m}, "quoteToken": {"symbol": "SOL"},
+                     "liquidity": {"usd": 1}} for m in ("A", "B")]
+
+        d = sources.MarketDiscovery(C.ApiConfig(), limits)
+        with mock.patch.object(sources, "get_json", side_effect=fake):
+            first = {c.mint for c in d.candidates()}
+            second = {c.mint for c in d.candidates()}    # sources rate limited -> cached mints
+        self.assertEqual(first, {"A", "B"})
+        self.assertEqual(second, {"A", "B"})
+        self.assertEqual(sum("token-profiles" in u for u in calls), 1)
+        self.assertEqual(d.last_errors, [])
+
+
+class MarkPacingTests(unittest.TestCase):
+    def test_mark_interval_follows_jupiter_share(self):
+        from paperbot.agents import EquityAgent
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(jupiter_mark_share=0.6)
+            store = Store(os.path.join(d, "t.sqlite"))
+            eq = EquityAgent(cfg, None, store, mock.Mock(), jupiter_rpm=55)
+            self.assertAlmostEqual(eq.mark_interval_s(5), 5 * 60 / 33)
+            self.assertEqual(EquityAgent(cfg, None, store, mock.Mock()).mark_interval_s(5), 0.0)
+
+
+class EnvConfigTests(unittest.TestCase):
+    def test_env_overrides_and_expansion(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as fh:
+            fh.write('[api]\nsolana_rpc_url = "https://rpc.example/?api-key=${TEST_RPC_KEY}"\n')
+        try:
+            with mock.patch.dict(os.environ, {"TEST_RPC_KEY": "abc"}, clear=False):
+                self.assertEqual(C.load_config(fh.name).api.solana_rpc_url, "https://rpc.example/?api-key=abc")
+            with mock.patch.dict(os.environ, {"PAPERBOT_RPC_URL": "https://other/", "JUPITER_API_KEY": "k"}):
+                cfg = C.load_config(fh.name)
+                self.assertEqual((cfg.api.solana_rpc_url, cfg.api.jupiter_api_key), ("https://other/", "k"))
+        finally:
+            os.unlink(fh.name)
+
+    def test_defaults_need_no_keys(self):
+        cfg = C.BotConfig()
+        self.assertEqual(cfg.api.jupiter_api_key, "")
+        self.assertNotIn("api-key", cfg.api.solana_rpc_url)
+
+
+class BudgetTests(unittest.TestCase):
+    def test_entries_deferred_without_jupiter_budget(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
+            store = Store(cfg.db_path)
+            world = MockWorld(seed=3)
+            exe = make_execution("paper", world, cfg.risk)
+            checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
+            starved = mock.Mock()
+            starved.available.return_value = 0.0
+            starved.snapshot.return_value = {}
+            starved.get.return_value = None
+            pipe = Pipeline(cfg, world, checker, exe, store, echo=False, limits=starved)
+            for _ in range(20):
+                world.step()
+                pipe.tick()
+            self.assertEqual(store.trades(), [])
+            self.assertEqual(store.rugchecks(), [])
+            self.assertIn("deferred", store.get("agent:RugCheck")["summary"])
+
+
 if __name__ == "__main__":
     unittest.main()

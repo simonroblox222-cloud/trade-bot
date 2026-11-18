@@ -20,6 +20,7 @@ from .config import LAMPORTS_PER_SOL, BotConfig
 from .execution import Fill, PaperExecution
 from .models import RugReport, TokenCandidate
 from .risk import Account, daily_limit_hit, exit_reason, size_position
+from .ratelimit import Limits
 from .rugcheck import RugChecker
 from .sources import DiscoveryProvider
 from .store import Store
@@ -63,6 +64,7 @@ class Scanner:
         self.discovery = discovery
         self.store = store
         self.log = log
+        self._logged: dict[str, float] = {}
 
     def signal(self, c: TokenCandidate, now: float) -> tuple[bool, str]:
         s = self.s
@@ -103,7 +105,9 @@ class Scanner:
         picked = picked[: self.s.max_candidates_per_tick]
         self.log.status("Scanner", f"{len(cands)} pairs seen, {len(picked)} passed signal")
         for c, why in picked:
-            self.log.log("Scanner", "info", f"{c.symbol} [{c.source}] {why}", c.mint)
+            if now - self._logged.get(c.mint, 0) > 300:  # don't repeat the same pick every cycle
+                self._logged[c.mint] = now
+                self.log.log("Scanner", "info", f"{c.symbol} [{c.source}] {why}", c.mint)
         return picked
 
 
@@ -115,10 +119,18 @@ class RugGuard:
         self.store = store
         self.log = log
 
-    def run(self, picked: list[tuple[TokenCandidate, str]], probe_sol: float):
-        passed, failed = [], 0
+    def run(self, picked: list[tuple[TokenCandidate, str]], probe_sol: float, has_budget=lambda: True):
+        passed, failed, deferred = [], 0, 0
         blacklist = set(self.store.get("blacklist", []))
         for c, why in picked:
+            cached = self.checker.cache.get(c.mint)
+            if cached is not None:
+                if cached.passed:
+                    passed.append((c, why, cached))
+                continue
+            if not has_budget():
+                deferred += 1  # API budget reserved for open positions; retry next cycle
+                continue
             rep = self.checker.check(c, int(probe_sol * LAMPORTS_PER_SOL))
             self.store.record_rugcheck(rep, c)
             if rep.passed:
@@ -130,7 +142,8 @@ class RugGuard:
                 blacklist.add(c.mint)
                 self.log.log(self.name, "warn", f"{c.symbol} REJECT: {'; '.join(rep.reasons)}", c.mint)
         self.store.set("blacklist", sorted(blacklist)[-5000:])
-        self.log.status(self.name, f"{len(passed)} passed, {failed} rejected")
+        self.log.status(self.name, f"{len(passed)} passed, {failed} rejected"
+                        + (f", {deferred} deferred (API budget)" if deferred else ""))
         return passed
 
 
@@ -215,8 +228,11 @@ class Executor:
 
 
 class EquityAgent:
-    def __init__(self, cfg: BotConfig, exe: PaperExecution, store: Store, log: Logger):
+    def __init__(self, cfg: BotConfig, exe: PaperExecution, store: Store, log: Logger,
+                 jupiter_rpm: float | None = None):
         self.r = cfg.risk
+        self.mark_rpm = jupiter_rpm * cfg.jupiter_mark_share if jupiter_rpm else None
+        self.last_mark = 0.0
         self.exe = exe
         self.store = store
         self.log = log
@@ -224,9 +240,18 @@ class EquityAgent:
             self.store.set("cash", self.r.starting_balance_sol)
             self.store.set("starting_balance", self.r.starting_balance_sol)
 
+    def mark_interval_s(self, open_count: int) -> float:
+        """How often all open positions can be re-priced within the Jupiter budget share."""
+        return open_count * 60.0 / self.mark_rpm if self.mark_rpm else 0.0
+
     def mark(self) -> dict[int, Fill | None]:
         marks: dict[int, Fill | None] = {}
-        for pos in self.store.open_positions():
+        open_pos = self.store.open_positions()
+        now = time.time()
+        if now - self.last_mark < self.mark_interval_s(len(open_pos)):
+            return marks  # not due yet; exits are evaluated on the next mark
+        self.last_mark = now
+        for pos in open_pos:
             fill = self.exe.simulate_sell(pos["mint"], pos["token_amount"])
             marks[pos["id"]] = fill
             if fill is None:
@@ -275,8 +300,9 @@ class EquityAgent:
 
 class Pipeline:
     def __init__(self, cfg: BotConfig, discovery: DiscoveryProvider, checker: RugChecker,
-                 exe: PaperExecution, store: Store, echo: bool = True):
+                 exe: PaperExecution, store: Store, echo: bool = True, limits: Limits | None = None):
         self.cfg = cfg
+        self.limits = limits or Limits()
         self.store = store
         self.exe = exe
         self.log = Logger(store, echo)
@@ -284,7 +310,8 @@ class Pipeline:
         self.rug = RugGuard(checker, store, self.log)
         self.sizer = Sizer(cfg, self.log)
         self.executor = Executor(cfg, exe, store, self.log)
-        self.equity = EquityAgent(cfg, exe, store, self.log)
+        jup = self.limits.get("jupiter")
+        self.equity = EquityAgent(cfg, exe, store, self.log, jup.per_minute if jup else None)
         store.set("mode", exe.mode)
 
     def tick(self) -> Account:
@@ -301,7 +328,8 @@ class Pipeline:
             held = {p["mint"] for p in self.store.open_positions()}
             picked = self.scanner.run(held)
             probe = max(self.cfg.risk.min_position_sol, acc.equity * self.cfg.risk.position_size_pct / 100)
-            for cand, signal, rep in self.rug.run(picked, min(probe, self.cfg.risk.max_position_sol)):
+            budget = lambda: self.limits.available("jupiter") >= self.cfg.min_jupiter_budget_for_entry
+            for cand, signal, rep in self.rug.run(picked, min(probe, self.cfg.risk.max_position_sol), budget):
                 acc = self.equity.account()
                 size = self.sizer.run(cand, acc, self.exe.tx_fee_sol)
                 if size:
@@ -309,4 +337,5 @@ class Pipeline:
         else:
             self.log.status("Scanner", "paused (daily loss limit)", "halted")
         self.store.set("last_tick", time.time())
+        self.store.set("api_stats", self.limits.snapshot())
         return self.equity.snapshot()

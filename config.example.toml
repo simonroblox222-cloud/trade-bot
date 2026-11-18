@@ -1,7 +1,9 @@
 # Skopíruj na config.toml a uprav. Všetky kľúče sú voliteľné (predvolené hodnoty sú v paperbot/config.py).
 # Live režim sa NEDÁ zapnúť konfiguráciou: mode musí byť "paper".
 mode = "paper"
-tick_seconds = 20
+tick_seconds = 2                    # minimálna pauza medzi cyklami; tempo určujú limity API nižšie
+min_jupiter_budget_for_entry = 3    # nové rug checky len keď ostáva Jupiter budget
+jupiter_mark_share = 0.6            # podiel Jupiter limitu na preceňovanie otvorených pozícií
 db_path = "paperbot.sqlite"
 dashboard_host = "127.0.0.1"
 dashboard_port = 8787
@@ -9,9 +11,20 @@ dashboard_port = 8787
 [api]
 jupiter_quote_url = "https://lite-api.jup.ag/swap/v1/quote"
 # jupiter_api_key = ""          # ak používaš api.jup.ag (posiela sa ako x-api-key); NIE je to kľúč k peňaženke
-solana_rpc_url = "https://api.mainnet-beta.solana.com"   # verejné RPC má prísne limity, lepšie vlastný Helius/Triton endpoint
+solana_rpc_url = "https://api.mainnet-beta.solana.com"   # zadarmo, bez kľúča
+# Voliteľné (tiež zadarmo): free Helius/QuickNode endpoint. Kľúč nedávaj do súboru v repe,
+# použi env premennú:  export PAPERBOT_RPC_URL="https://mainnet.helius-rpc.com/?api-key=..."
+# alebo tu:  solana_rpc_url = "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
 use_dexscreener = true
 use_pumpfun = true              # neoficiálne pump.fun frontend API, môže sa zmeniť
+
+[rate_limits]                       # požiadavky za minútu, tesne pod free limitmi (0 = bez limitu)
+jupiter = 55
+dexscreener_profiles = 55
+dexscreener_pairs = 250
+pumpfun = 20
+rugcheck = 20
+rpc = 90                            # s free Helius kľúčom pokojne 500
 
 [rug]
 min_liquidity_usd = 20000

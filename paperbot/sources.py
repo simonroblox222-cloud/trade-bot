@@ -10,6 +10,7 @@ from typing import Protocol
 
 from .config import ApiConfig
 from .http import HttpError, get_json, post_json
+from .ratelimit import Limits, RateLimited
 from .models import Holder, MintInfo, Quote, TokenCandidate
 
 
@@ -34,8 +35,9 @@ class RugApiProvider(Protocol):
 class JupiterQuotes:
     """GET /quote only. The /swap endpoint (which builds a transaction) is never called."""
 
-    def __init__(self, api: ApiConfig):
+    def __init__(self, api: ApiConfig, limits: Limits | None = None):
         self.api = api
+        self.limiter = (limits or Limits()).get("jupiter")
 
     def quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> Quote | None:
         if amount <= 0:
@@ -47,7 +49,7 @@ class JupiterQuotes:
         })
         headers = {"x-api-key": self.api.jupiter_api_key} if self.api.jupiter_api_key else None
         try:
-            data = get_json(f"{self.api.jupiter_quote_url}?{qs}", self.api.timeout_s, headers)
+            data = get_json(f"{self.api.jupiter_quote_url}?{qs}", self.api.timeout_s, headers, self.limiter)
         except HttpError:
             return None
         if not isinstance(data, dict) or "outAmount" not in data:
@@ -68,17 +70,24 @@ class MarketDiscovery:
     """New mints from DexScreener token profiles + pump.fun newest coins,
     enriched with pair stats from DexScreener (which also indexes pump.fun curves)."""
 
-    def __init__(self, api: ApiConfig):
+    def __init__(self, api: ApiConfig, limits: Limits | None = None):
         self.api = api
+        limits = limits or Limits()
+        self.lim_profiles = limits.get("dexscreener_profiles")
+        self.lim_pairs = limits.get("dexscreener_pairs")
+        self.lim_pumpfun = limits.get("pumpfun")
         self.last_errors: list[str] = []
+        self._mints_cache: dict[str, list[str]] = {}
 
     def _dexscreener_mints(self) -> list[str]:
-        profiles = get_json(self.api.dexscreener_profiles_url, self.api.timeout_s)
+        # non-blocking: when the budget is used up we reuse the previous list
+        profiles = get_json(self.api.dexscreener_profiles_url, self.api.timeout_s,
+                            limiter=self.lim_profiles, block=False)
         return [p["tokenAddress"] for p in profiles or []
                 if p.get("chainId") == "solana" and p.get("tokenAddress")]
 
     def _pumpfun_mints(self) -> list[str]:
-        coins = get_json(self.api.pumpfun_coins_url, self.api.timeout_s)
+        coins = get_json(self.api.pumpfun_coins_url, self.api.timeout_s, limiter=self.lim_pumpfun, block=False)
         if isinstance(coins, dict):
             coins = coins.get("coins") or []
         return [c["mint"] for c in coins or [] if c.get("mint")]
@@ -91,16 +100,20 @@ class MarketDiscovery:
             if not enabled:
                 continue
             try:
-                for m in fn():
-                    sourced.setdefault(m, name)
+                self._mints_cache[name] = fn()
+            except RateLimited:
+                pass  # budget exhausted this tick: reuse cached list
             except HttpError as e:
                 self.last_errors.append(f"{name}: {e}")
+            for m in self._mints_cache.get(name, []):
+                sourced.setdefault(m, name)
         mints = list(sourced)[:90]
         out: list[TokenCandidate] = []
         for i in range(0, len(mints), 30):  # endpoint accepts up to 30 addresses
             batch = mints[i:i + 30]
             try:
-                pairs = get_json(self.api.dexscreener_tokens_url.format(mints=",".join(batch)), self.api.timeout_s)
+                pairs = get_json(self.api.dexscreener_tokens_url.format(mints=",".join(batch)), self.api.timeout_s,
+                                 limiter=self.lim_pairs)
             except HttpError as e:
                 self.last_errors.append(f"dexscreener pairs: {e}")
                 continue
@@ -138,15 +151,16 @@ class MarketDiscovery:
 
 # --------------------------------------------------------------------------- Solana RPC
 class SolanaRpc:
-    def __init__(self, api: ApiConfig):
+    def __init__(self, api: ApiConfig, limits: Limits | None = None):
         self.api = api
+        self.limiter = (limits or Limits()).get("rpc")
         self._id = 0
 
     def _call(self, method: str, params: list):
         self._id += 1
         res = post_json(self.api.solana_rpc_url,
                         {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params},
-                        self.api.timeout_s)
+                        self.api.timeout_s, self.limiter)
         if "error" in res:
             raise HttpError(f"RPC {method}: {res['error']}")
         return res["result"]
@@ -191,12 +205,13 @@ class SolanaRpc:
 
 # --------------------------------------------------------------------------- RugCheck
 class RugCheckApi:
-    def __init__(self, api: ApiConfig):
+    def __init__(self, api: ApiConfig, limits: Limits | None = None):
         self.api = api
+        self.limiter = (limits or Limits()).get("rugcheck")
 
     def summary(self, mint: str) -> dict | None:
         try:
-            return get_json(self.api.rugcheck_url.format(mint=mint), self.api.timeout_s)
+            return get_json(self.api.rugcheck_url.format(mint=mint), self.api.timeout_s, limiter=self.limiter)
         except HttpError:
             return None
 

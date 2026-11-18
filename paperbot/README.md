@@ -23,6 +23,29 @@ python -m paperbot reset          # zmaže paper účet (SQLite)
 python -m unittest discover tests  # testy
 ```
 
+## Rýchlosť a free limity
+
+Všetko funguje zadarmo a bez kľúča: Jupiter lite API, DexScreener, pump.fun, RugCheck a verejné Solana RPC.
+Bot nemá pevný interval. Beží tak rýchlo, ako dovolia limity, ktoré sú v `[rate_limits]` nastavené tesne pod free plány:
+
+| API | predvolene req/min | poznámka |
+|---|---|---|
+| Jupiter quote | 55 | úzke hrdlo; 60 % ide na preceňovanie otvorených pozícií, zvyšok na nové vstupy |
+| DexScreener profiles / pairs | 55 / 250 | |
+| pump.fun | 20 | neoficiálne API |
+| RugCheck | 20 | bez zverejneného limitu |
+| Solana RPC | 90 | verejné RPC je prísne; s voliteľným free Helius kľúčom ~500 |
+
+- Každé API má vlastný token-bucket limiter, pri HTTP 429 sa API pozastaví podľa `Retry-After` (inak 30 s).
+- Otvorené pozície majú prednosť: preceňujú sa v rámci `jupiter_mark_share` (pri 5 pozíciách cca každých 9 s)
+  a nový rug check sa spustí len keď ostáva Jupiter budget (`min_jupiter_budget_for_entry`), inak sa odloží na ďalší cyklus.
+- Keď sa minie budget na DexScreener profiles alebo pump.fun, Scanner použije posledný zoznam mintov.
+- Dashboard ukazuje využitie každého API (req/min, 429, chyby) a počet fillov za hodinu.
+- Kľúče (voliteľné) len cez env: `PAPERBOT_RPC_URL`, `JUPITER_API_KEY`, alebo `${PREMENNA}` v `config.toml`.
+
+Hrubý odhad pri free limitoch: ~20 Jupiter quotes/min na nové vstupy = asi 6 až 7 nových tokenov
+prejdených rug checkom za minútu; skutočný počet obchodov určujú signál, rug check a max. 5 otvorených pozícií.
+
 ## Agenti
 
 ```
@@ -59,7 +82,7 @@ porovnať s reálnymi fillmi.
   pesimistický `extra_slippage_bps`. Výsledky z `--mock` sú syntetické a nehovoria nič o ziskovosti stratégie.
 - Ukážková momentum stratégia je len východisko, nie overená výhoda.
 - pump.fun frontend API je neoficiálne (môže blokovať alebo sa zmeniť); vtedy Scanner zapíše varovanie a ide ďalej s DexScreener.
-- Verejné Solana RPC má prísne rate limity; na reálny beh odporúčam vlastný RPC endpoint.
+- Verejné Solana RPC má prísne rate limity; free Helius/QuickNode endpoint je voliteľný a pomôže s rýchlosťou rug checku.
 - Holder koncentrácia vynecháva iba známe AMM autority (Raydium AMM v4, CPMM) a pri bonding curve najväčší účet. Iné DEX vaulty (Meteora, PumpSwap) môžu koncentráciu nadhodnotiť, dopíš ich do `pool_owner_allowlist`.
 - RugCheck API je bez kľúča a môže mať limity; s `require_rugcheck_api = false` sa výpadok iba zaloguje.
 - Odmietnuté tokeny idú na blacklist natrvalo (aj pri nízkej likvidite), `reset` ho zmaže.

@@ -23,6 +23,8 @@ def build_state(store: Store) -> dict:
     day_start = store.get("day_start_equity")
     equity = cash + pos_value
     closed = int(st["n"])
+    hour_ago = time.time() - 3600
+    trades_1h = store._rows("SELECT COUNT(*) n FROM trades WHERE ts > ?", (hour_ago,))[0]["n"]
     return {
         "now": time.time(),
         "mode": store.get("mode", "paper"),
@@ -40,6 +42,8 @@ def build_state(store: Store) -> dict:
             "best": st["best"], "worst": st["worst"],
             "exposure": sum(p["cost_sol"] for p in open_pos),
         },
+        "trades_last_hour": trades_1h,
+        "api": store.get("api_stats", {}) or {},
         "agents": [{"name": a, **(store.get(f"agent:{a}") or {"ts": None, "summary": "idle", "state": "idle"})}
                    for a in AGENTS],
         "open_positions": open_pos,

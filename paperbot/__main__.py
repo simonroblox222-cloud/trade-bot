@@ -14,25 +14,29 @@ import time
 from .agents import Pipeline
 from .config import load_config
 from .dashboard import serve
+from dataclasses import asdict
+
 from .execution import make_execution
+from .ratelimit import Limits
 from .rugcheck import RugChecker
 from .store import Store
 
 
 def build(cfg, mock: bool, seed: int):
+    limits = Limits() if mock else Limits(asdict(cfg.rate_limits))
     if mock:
         from .mock import MockWorld
         world = MockWorld(seed=seed)
         discovery = quotes = onchain = rug_api = world
     else:
         from .sources import JupiterQuotes, MarketDiscovery, RugCheckApi, SolanaRpc
-        discovery, quotes = MarketDiscovery(cfg.api), JupiterQuotes(cfg.api)
-        onchain, rug_api = SolanaRpc(cfg.api), RugCheckApi(cfg.api)
+        discovery, quotes = MarketDiscovery(cfg.api, limits), JupiterQuotes(cfg.api, limits)
+        onchain, rug_api = SolanaRpc(cfg.api, limits), RugCheckApi(cfg.api, limits)
     exe = make_execution(cfg.mode, quotes, cfg.risk)
     checker = RugChecker(cfg.rug, onchain, rug_api if cfg.rug.use_rugcheck_api else None, quotes,
                          cfg.risk.slippage_bps)
     on_tick = world.step if mock else (lambda: None)
-    return discovery, checker, exe, on_tick
+    return discovery, checker, exe, on_tick, limits
 
 
 def main(argv=None) -> int:
@@ -65,8 +69,8 @@ def main(argv=None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    discovery, checker, exe, on_tick = build(cfg, a.mock, a.seed)
-    pipe = Pipeline(cfg, discovery, checker, exe, store, echo=not a.quiet)
+    discovery, checker, exe, on_tick, limits = build(cfg, a.mock, a.seed)
+    pipe = Pipeline(cfg, discovery, checker, exe, store, echo=not a.quiet, limits=limits)
     if not a.no_dashboard:
         try:
             serve(cfg.db_path, cfg.dashboard_host, cfg.dashboard_port, background=True)
