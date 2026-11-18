@@ -151,7 +151,7 @@ class MockWorld:
             return []
         pool = Holder("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", "vault", int(tk.supply * 0.6))
         if tk.bonding:
-            pool = Holder("BondingCurvePDA", "curve", int(tk.supply * 0.6))
+            pool = Holder("GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL", "curve", int(tk.supply * 0.6))  # a PDA
         big = 0.25 if tk.kind == "whale" else 0.03
         hs = [Holder(f"w{i}", f"a{i}", int(tk.supply * (big if i == 0 else 0.012))) for i in range(12)]
         return [pool, *hs]

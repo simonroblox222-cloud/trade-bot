@@ -39,6 +39,9 @@ h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)
 .api .bar{display:inline-block;width:46px;height:6px;border:1px solid var(--line);vertical-align:middle;margin:0 4px}
 .api .bar i{display:block;height:100%;background:var(--green)}
 .api .hot i{background:var(--amber)} .api .err{color:var(--red)}
+.edge{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:baseline}
+.edge h2{margin:0}
+.edge .vd{color:var(--hi)}
 .kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:12px}
 .kpi .v{font-size:20px;color:var(--hi);font-variant-numeric:tabular-nums;white-space:nowrap}
 .kpi .s{color:var(--dim);font-size:11px}
@@ -76,6 +79,7 @@ a{color:var(--cyan)}
 <div class="api" id="api"></div>
 
 <div class="kpis" id="kpis"></div>
+<div class="panel edge sec" id="edge"></div>
 
 <div class="grid2">
   <div class="panel"><h2>Equity krivka (SOL)</h2><canvas id="eq"></canvas></div>
@@ -171,6 +175,15 @@ function render(s) {
     kpi("Expozícia", f(a.exposure, 3) + " ◎", `${s.open_positions.length} otvorených · ${s.trades_last_hour} fillov/h`),
     kpi("Poplatky + slip", f(a.fees) + " ◎", `realizované ${sg(a.realized)}`),
   ].join("");
+
+  const e = s.edge;
+  $("edge").innerHTML = `<h2>Edge check</h2>` + (e.n ? [
+    `obchodov <b>${e.n}</b>`,
+    `priemer <b class="${cls(e.mean_pct)}">${sg(e.mean_pct, 2)} %</b>`,
+    `90 % rozsah <b>${sg(e.ci90_low, 2)} % až ${sg(e.ci90_high, 2)} %</b>`,
+    `P&L bez 3 najlepších <b class="${cls(e.pnl_without_best3_sol)}">${sg(e.pnl_without_best3_sol)} ◎</b>`,
+    s.failed_tx_fees ? `poplatky za zlyhané swapy <b class="neg">${f(s.failed_tx_fees, 5)} ◎</b>` : "",
+  ].filter(Boolean).map(x => `<span>${x}</span>`).join("") : "") + `<span class="vd">→ ${esc(e.verdict)}</span>`;
 
   drawEquity(s.equity_curve, a.starting);
 

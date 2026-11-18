@@ -14,6 +14,15 @@ from .ratelimit import Limits, RateLimited
 from .models import Holder, MintInfo, Quote, TokenCandidate
 
 
+class SourceUnavailable(HttpError):
+    """Network error, timeout, HTTP 429 or 5xx: the API is down, NOT an answer about the token.
+    Callers must not treat it as "no route" (which would write off a position or blacklist a token)."""
+
+
+def _transient(e: HttpError) -> bool:
+    return e.status is None or e.status == 429 or e.status >= 500
+
+
 class QuoteProvider(Protocol):
     def quote(self, input_mint: str, output_mint: str, amount: int, slippage_bps: int) -> Quote | None: ...
 
@@ -50,8 +59,10 @@ class JupiterQuotes:
         headers = {"x-api-key": self.api.jupiter_api_key} if self.api.jupiter_api_key else None
         try:
             data = get_json(f"{self.api.jupiter_quote_url}?{qs}", self.api.timeout_s, headers, self.limiter)
-        except HttpError:
-            return None
+        except HttpError as e:
+            if _transient(e):
+                raise SourceUnavailable(f"Jupiter: {e}", e.status) from e
+            return None  # 4xx: Jupiter answered, e.g. no route for this pair
         if not isinstance(data, dict) or "outAmount" not in data:
             return None
         labels = [(step.get("swapInfo") or {}).get("label", "?") for step in data.get("routePlan", [])]
@@ -168,8 +179,8 @@ class SolanaRpc:
     def mint_info(self, mint: str) -> MintInfo | None:
         try:
             res = self._call("getAccountInfo", [mint, {"encoding": "jsonParsed"}])
-        except HttpError:
-            return None
+        except HttpError as e:
+            raise SourceUnavailable(f"Solana RPC: {e}", e.status) from e
         val = (res or {}).get("value")
         if not val:
             return None

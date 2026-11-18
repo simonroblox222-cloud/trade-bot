@@ -99,6 +99,7 @@ class RiskConfig:
     priority_fee_sol: float = 0.0001
     jito_tip_sol: float = 0.0             # optional, per transaction
     ata_rent_sol: float = 0.00203928      # token account rent, refunded on close
+    latency_seconds: float = 2.0          # decision -> landed swap; re-quote after this, fill at the worse price
     max_consecutive_quote_failures: int = 3  # then position written off (no route = likely rug)
 
 
@@ -114,6 +115,7 @@ class StrategyConfig:
     min_buy_sell_ratio_m5: float = 1.2
     max_candidates_per_tick: int = 5
     allow_bonding_curve: bool = True      # trade pump.fun tokens before graduation
+    confirm_cycles: int = 3               # signal must pass this many scans in a row
 
 
 @dataclass
@@ -122,7 +124,7 @@ class BotConfig:
     # minimum pause between cycles; the real pace is set by the API rate limits
     tick_seconds: float = 2.0
     # skip new rug checks when Jupiter budget is below this (keeps exits responsive)
-    min_jupiter_budget_for_entry: float = 3.0
+    min_jupiter_budget_for_entry: float = 4.0  # rug round trip (2) + buy with latency (2)
     # share of the Jupiter rate limit used to re-price open positions; the rest goes to new entries.
     # e.g. 55 rpm * 0.6 = 33 marks/min -> with 5 open positions each is re-priced every ~9 s
     jupiter_mark_share: float = 0.6

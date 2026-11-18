@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agents import AGENTS
 from .config import LIVE_TRADING_ENABLED
+from .edge import edge_check
 from .store import Store
 
 HTML = Path(__file__).with_name("dashboard.html")
@@ -23,6 +24,7 @@ def build_state(store: Store) -> dict:
     day_start = store.get("day_start_equity")
     equity = cash + pos_value
     closed = int(st["n"])
+    all_closed = store.closed_positions(100_000)
     hour_ago = time.time() - 3600
     trades_1h = store._rows("SELECT COUNT(*) n FROM trades WHERE ts > ?", (hour_ago,))[0]["n"]
     return {
@@ -48,6 +50,8 @@ def build_state(store: Store) -> dict:
                    for a in AGENTS],
         "open_positions": open_pos,
         "closed_positions": store.closed_positions(100),
+        "edge": edge_check([p["pnl_pct"] for p in all_closed], [p["pnl_sol"] for p in all_closed]),
+        "failed_tx_fees": store.get("failed_tx_fees", 0.0) or 0.0,
         "trades": store.trades(150),
         "events": store.events(150),
         "rugchecks": store.rugchecks(40),

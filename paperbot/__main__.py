@@ -32,7 +32,8 @@ def build(cfg, mock: bool, seed: int):
         from .sources import JupiterQuotes, MarketDiscovery, RugCheckApi, SolanaRpc
         discovery, quotes = MarketDiscovery(cfg.api, limits), JupiterQuotes(cfg.api, limits)
         onchain, rug_api = SolanaRpc(cfg.api, limits), RugCheckApi(cfg.api, limits)
-    exe = make_execution(cfg.mode, quotes, cfg.risk)
+    # mock market only moves between cycles, so waiting out the latency would change nothing
+    exe = make_execution(cfg.mode, quotes, cfg.risk, sleep=(lambda _s: None) if mock else time.sleep)
     checker = RugChecker(cfg.rug, onchain, rug_api if cfg.rug.use_rugcheck_api else None, quotes,
                          cfg.risk.slippage_bps)
     on_tick = world.step if mock else (lambda: None)

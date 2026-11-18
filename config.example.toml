@@ -2,7 +2,7 @@
 # Live režim sa NEDÁ zapnúť konfiguráciou: mode musí byť "paper".
 mode = "paper"
 tick_seconds = 2                    # minimálna pauza medzi cyklami; tempo určujú limity API nižšie
-min_jupiter_budget_for_entry = 3    # nové rug checky len keď ostáva Jupiter budget
+min_jupiter_budget_for_entry = 4    # nové rug checky len keď ostáva Jupiter budget
 jupiter_mark_share = 0.6            # podiel Jupiter limitu na preceňovanie otvorených pozícií
 db_path = "paperbot.sqlite"
 dashboard_host = "127.0.0.1"
@@ -58,6 +58,7 @@ base_fee_sol = 0.000005
 priority_fee_sol = 0.0001
 jito_tip_sol = 0.0
 ata_rent_sol = 0.00203928
+latency_seconds = 2.0           # oneskorenie rozhodnutie -> swap; druhý quote po ňom, fill za horšiu cenu
 
 [strategy]
 min_liquidity_usd = 20000
@@ -69,3 +70,4 @@ min_price_change_h1_pct = 5
 max_price_change_h1_pct = 300
 min_buy_sell_ratio_m5 = 1.2
 max_candidates_per_tick = 5
+confirm_cycles = 3              # signál musí platiť toľko skenov po sebe

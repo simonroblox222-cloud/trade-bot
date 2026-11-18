@@ -64,6 +64,24 @@ Scanner → RugCheck → Sizer → Executor → Logger → Equity
 Dashboard (`dashboard.py`, `dashboard.html`) iba číta SQLite: stav agentov, balance, equity, P&L, výhry/prehry,
 equity krivka, živý log, otvorené pozície, história obchodov s dôvodmi, výsledky rug checku.
 
+## Čo sme prevzali z research repozitárov
+
+Kód z nich nie je skopírovaný ani spustený; prevzaté sú postupy (repozitáre boli len čítané):
+
+- **Top holderi po peňaženkách** (`chainstacklabs/pump-fun-bot`): účty vlastnené programom (bonding curve,
+  pool authority, vaulty) sú PDA mimo ed25519 krivky a nepočítajú sa; viac účtov jednej peňaženky sa sčíta.
+  Test „on-curve“ je v `solana_keys.py` (čistý Python).
+- **Oneskorenie** (`m3n4ce-dev/meme_traderv1` zmeral, že 0,5–2,5 s oneskorenie zmazalo celý paper zisk):
+  po rozhodnutí sa čaká `latency_seconds`, spraví sa druhý quote a fill je za horšiu cenu. Ak cena medzitým
+  ujde za slippage, swap „zlyhá“ a stratí sa len poplatok (ako naozaj). V `--mock` režime sa nečaká.
+- **Edge check** (`meme_traderv1`): dashboard ukazuje priemerný obchod s 90 % bootstrap rozsahom,
+  P&L bez 3 najlepších obchodov a verdikt, či je výsledok skutočný alebo šťastie (min. 30 obchodov).
+- **Potvrdenie signálu** (`warp-id/solana-trading-bot`, `CONSECUTIVE_FILTER_MATCHES`): signál musí platiť
+  `confirm_cycles` skenov po sebe, aby bot nenaletel na jednorazový výkyv.
+
+Výpadok API (timeout, 429, 5xx) sa odlišuje od odpovede „neexistuje route“: pri výpadku sa pozícia neodpíše
+a token sa nedá na blacklist, len sa to skúsi znova.
+
 ## Live režim je natvrdo vypnutý
 
 - `config.LIVE_TRADING_ENABLED = False` je konštanta v kóde, nie hodnota z configu ani env.
@@ -83,7 +101,7 @@ porovnať s reálnymi fillmi.
 - Ukážková momentum stratégia je len východisko, nie overená výhoda.
 - pump.fun frontend API je neoficiálne (môže blokovať alebo sa zmeniť); vtedy Scanner zapíše varovanie a ide ďalej s DexScreener.
 - Verejné Solana RPC má prísne rate limity; free Helius/QuickNode endpoint je voliteľný a pomôže s rýchlosťou rug checku.
-- Holder koncentrácia vynecháva iba známe AMM autority (Raydium AMM v4, CPMM) a pri bonding curve najväčší účet. Iné DEX vaulty (Meteora, PumpSwap) môžu koncentráciu nadhodnotiť, dopíš ich do `pool_owner_allowlist`.
+- `getTokenLargestAccounts` vracia len 20 najväčších účtov, takže peňaženka rozdelená na veľa malých účtov sa nemusí celá započítať.
 - RugCheck API je bez kľúča a môže mať limity; s `require_rugcheck_api = false` sa výpadok iba zaloguje.
 - Odmietnuté tokeny idú na blacklist natrvalo (aj pri nízkej likvidite), `reset` ho zmaže.
 

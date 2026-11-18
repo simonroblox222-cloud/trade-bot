@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from .config import SOL_MINT, RugConfig
 from .models import RugReport, TokenCandidate
-from .sources import OnchainProvider, QuoteProvider, RugApiProvider, TTLCache
+from .solana_keys import is_wallet
+from .sources import OnchainProvider, QuoteProvider, RugApiProvider, SourceUnavailable, TTLCache
 
 
 class RugChecker:
@@ -20,6 +21,13 @@ class RugChecker:
         cached = self.cache.get(cand.mint)
         if cached is not None:
             return cached
+        try:
+            return self._check(cand, probe_lamports)
+        except SourceUnavailable as e:  # not cached: try again next cycle
+            return RugReport(mint=cand.mint, passed=False, reasons=[f"data source unavailable: {e}"],
+                             transient=True)
+
+    def _check(self, cand: TokenCandidate, probe_lamports: int) -> RugReport:
         rep = RugReport(mint=cand.mint, passed=False)
         c = self.cfg
 
@@ -42,19 +50,23 @@ class RugChecker:
                 if bps > c.max_transfer_fee_bps:
                     rep.reasons.append(f"transfer fee {bps} bps")
 
-            # 2) holder concentration (excluding AMM vault owners)
-            holders = sorted((h for h in self.onchain.largest_holders(cand.mint)
-                              if h.owner not in c.pool_owner_allowlist), key=lambda h: -h.amount)
-            if cand.is_bonding_curve and holders:
-                holders = holders[1:]  # largest account = pump.fun bonding curve reserves
-            if mi.supply > 0 and holders:
-                pcts = sorted((h.amount / mi.supply * 100 for h in holders), reverse=True)
+            # 2) holder concentration, by wallet. Accounts owned by programs (PDAs: bonding
+            #    curve, AMM pool authorities, vaults) are off-curve and left out; several
+            #    accounts of one wallet count together (as chainstacklabs/pump-fun-bot does).
+            by_wallet: dict[str, int] = {}
+            for h in self.onchain.largest_holders(cand.mint):
+                if h.owner in c.pool_owner_allowlist or not is_wallet(h.owner):
+                    continue
+                key = h.owner or h.token_account
+                by_wallet[key] = by_wallet.get(key, 0) + h.amount
+            if mi.supply > 0 and by_wallet:
+                pcts = sorted((a / mi.supply * 100 for a in by_wallet.values()), reverse=True)
                 rep.top10_pct = round(sum(pcts[:10]), 2)
                 if rep.top10_pct > c.max_top10_holders_pct:
-                    rep.reasons.append(f"top10 holders {rep.top10_pct:.1f}% > {c.max_top10_holders_pct}%")
+                    rep.reasons.append(f"top10 wallets {rep.top10_pct:.1f}% > {c.max_top10_holders_pct}%")
                 if pcts[0] > c.max_single_holder_pct:
-                    rep.reasons.append(f"largest holder {pcts[0]:.1f}% > {c.max_single_holder_pct}%")
-            elif not holders:
+                    rep.reasons.append(f"largest wallet {pcts[0]:.1f}% > {c.max_single_holder_pct}%")
+            elif not by_wallet:
                 rep.warnings.append("holder data unavailable")
 
         # 3) liquidity

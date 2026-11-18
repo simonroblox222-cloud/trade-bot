@@ -63,3 +63,4 @@ class RugReport:
     top10_pct: float | None = None
     lp_locked_pct: float | None = None
     roundtrip_loss_pct: float | None = None
+    transient: bool = False  # failed because an API was down; retry later, don't blacklist

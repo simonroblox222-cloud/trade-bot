@@ -22,7 +22,7 @@ from .models import RugReport, TokenCandidate
 from .risk import Account, daily_limit_hit, exit_reason, size_position
 from .ratelimit import Limits
 from .rugcheck import RugChecker
-from .sources import DiscoveryProvider
+from .sources import DiscoveryProvider, SourceUnavailable
 from .store import Store
 
 AGENTS = ["Scanner", "RugCheck", "Sizer", "Executor", "Logger", "Equity"]
@@ -65,6 +65,11 @@ class Scanner:
         self.store = store
         self.log = log
         self._logged: dict[str, float] = {}
+        self._streak: dict[str, int] = {}
+
+    def reset_streaks(self) -> None:
+        """Scanning paused (positions full / halted): confirmations must start over."""
+        self._streak.clear()
 
     def signal(self, c: TokenCandidate, now: float) -> tuple[bool, str]:
         s = self.s
@@ -90,7 +95,7 @@ class Scanner:
         for err in getattr(self.discovery, "last_errors", []) or []:
             self.log.log("Scanner", "warn", f"source error: {err}")
         blacklist = set(self.store.get("blacklist", []))
-        picked = []
+        picked, passing = [], []
         for c in cands:
             if c.mint in held or c.mint in blacklist:
                 continue
@@ -99,11 +104,21 @@ class Scanner:
                 continue
             ok, why = self.signal(c, now)
             if ok:
-                picked.append((c, why))
+                passing.append((c, why))
+        # The signal must hold for `confirm_cycles` scans in a row before we act on it
+        # (warp-id/solana-trading-bot CONSECUTIVE_FILTER_MATCHES): filters out one-off spikes.
+        need = max(1, self.s.confirm_cycles)
+        self._streak = {c.mint: self._streak.get(c.mint, 0) + 1 for c, _ in passing}
+        waiting = 0
+        for c, why in passing:
+            if self._streak[c.mint] >= need:
+                picked.append((c, f"{why}, confirmed {self._streak[c.mint]}x"))
+            else:
+                waiting += 1
         picked.sort(key=lambda p: p[0].price_change_m5_pct * min(p[0].buys_m5 / max(p[0].sells_m5, 1), 3),
                     reverse=True)
         picked = picked[: self.s.max_candidates_per_tick]
-        self.log.status("Scanner", f"{len(cands)} pairs seen, {len(picked)} passed signal")
+        self.log.status("Scanner", f"{len(cands)} pairs seen, {len(picked)} confirmed, {waiting} confirming")
         for c, why in picked:
             if now - self._logged.get(c.mint, 0) > 300:  # don't repeat the same pick every cycle
                 self._logged[c.mint] = now
@@ -132,6 +147,10 @@ class RugGuard:
                 deferred += 1  # API budget reserved for open positions; retry next cycle
                 continue
             rep = self.checker.check(c, int(probe_sol * LAMPORTS_PER_SOL))
+            if rep.transient:
+                deferred += 1
+                self.log.log(self.name, "warn", f"{c.symbol} check postponed: {rep.reasons[0]}", c.mint)
+                continue
             self.store.record_rugcheck(rep, c)
             if rep.passed:
                 extra = f" (warn: {'; '.join(rep.warnings)})" if rep.warnings else ""
@@ -143,7 +162,7 @@ class RugGuard:
                 self.log.log(self.name, "warn", f"{c.symbol} REJECT: {'; '.join(rep.reasons)}", c.mint)
         self.store.set("blacklist", sorted(blacklist)[-5000:])
         self.log.status(self.name, f"{len(passed)} passed, {failed} rejected"
-                        + (f", {deferred} deferred (API budget)" if deferred else ""))
+                        + (f", {deferred} deferred (API budget or outage)" if deferred else ""))
         return passed
 
 
@@ -168,14 +187,13 @@ class Executor:
         self.log = log
 
     def open(self, c: TokenCandidate, rep: RugReport, size_sol: float, signal: str) -> int | None:
-        fill = self.exe.simulate_buy(c.mint, int(size_sol * LAMPORTS_PER_SOL))
-        if fill is None:
-            self.log.log("Executor", "warn", f"{c.symbol}: no buy route / fill below minOut", c.mint)
+        res = self.exe.execute_buy(c.mint, int(size_sol * LAMPORTS_PER_SOL), self.r.max_price_impact_pct)
+        if res.fill is None:
+            self._fee_lost(res.fee_lost_sol)
+            self.log.log("Executor", "warn", f"{c.symbol}: buy not filled: {res.error}"
+                         + (f" (fee lost {res.fee_lost_sol:.5f} SOL)" if res.fee_lost_sol else ""), c.mint)
             return None
-        if fill.price_impact_pct > self.r.max_price_impact_pct:
-            self.log.log("Executor", "warn",
-                         f"{c.symbol}: price impact {fill.price_impact_pct:.2f}% > {self.r.max_price_impact_pct}%", c.mint)
-            return None
+        fill = res.fill
         cost = fill.net_sol
         cash = self.store.get("cash")
         if cost > cash:
@@ -197,6 +215,25 @@ class Executor:
                      c.mint)
         self.log.status("Executor", f"BUY {c.symbol} {size_sol:.3f} SOL")
         return pid
+
+    def _fee_lost(self, sol: float) -> None:
+        if sol:
+            self.store.set("cash", self.store.get("cash") - sol)
+            self.store.set("failed_tx_fees", (self.store.get("failed_tx_fees", 0.0) or 0.0) + sol)
+
+    def sell(self, pos: dict, mark: Fill | None, reason: str) -> bool:
+        """Exit with simulated latency. A reverted/unroutable sell keeps the position open."""
+        res = self.exe.execute_sell(pos["mint"], pos["token_amount"], mark)
+        if res.fill is None:
+            self._fee_lost(res.fee_lost_sol)
+            if res.fee_lost_sol:  # the failed attempt still cost this position its fee
+                self.store.update_position(pos["id"], cost_sol=pos["cost_sol"] + res.fee_lost_sol,
+                                           fees_sol=pos["fees_sol"] + res.fee_lost_sol)
+            self.log.log("Executor", "warn", f"SELL {pos['symbol']} failed ({reason}): {res.error}; retry next mark",
+                         pos["mint"])
+            return False
+        self.close(pos, res.fill, reason)
+        return True
 
     def close(self, pos: dict, fill: Fill | None, reason: str) -> None:
         proceeds = fill.net_sol if fill else 0.0
@@ -224,7 +261,7 @@ class Executor:
             why = exit_reason(pos["cost_sol"], fill.net_sol, pos["peak_value_sol"],
                               (now - pos["opened_at"]) / 60, self.r)
             if why:
-                self.close(pos, fill, why)
+                self.sell(pos, fill, why)
 
 
 class EquityAgent:
@@ -252,7 +289,13 @@ class EquityAgent:
             return marks  # not due yet; exits are evaluated on the next mark
         self.last_mark = now
         for pos in open_pos:
-            fill = self.exe.simulate_sell(pos["mint"], pos["token_amount"])
+            try:
+                fill = self.exe.simulate_sell(pos["mint"], pos["token_amount"])
+            except SourceUnavailable as e:
+                # API outage is not a missing route: don't count it towards a write-off
+                self.log.log("Equity", "warn", f"{pos['symbol']}: mark skipped, {e}", pos["mint"])
+                marks[pos["id"]] = None
+                continue
             marks[pos["id"]] = fill
             if fill is None:
                 self.store.update_position(pos["id"], quote_failures=pos["quote_failures"] + 1)
@@ -320,15 +363,19 @@ class Pipeline:
         acc = self.equity.check_day()
         if acc.halted and self.cfg.risk.close_all_on_daily_limit:
             for pos in self.store.open_positions():
-                self.executor.close(pos, self.exe.simulate_sell(pos["mint"], pos["token_amount"]),
-                                    "daily loss limit: close all")
+                self.executor.sell(pos, None, "daily loss limit: close all")
+        if acc.halted or acc.open_count >= self.cfg.risk.max_open_positions:
+            self.scanner.reset_streaks()
         if not acc.halted and acc.open_count >= self.cfg.risk.max_open_positions:
             self.log.status("Scanner", f"idle: {acc.open_count}/{self.cfg.risk.max_open_positions} positions open")
         elif not acc.halted:
             held = {p["mint"] for p in self.store.open_positions()}
             picked = self.scanner.run(held)
             probe = max(self.cfg.risk.min_position_sol, acc.equity * self.cfg.risk.position_size_pct / 100)
-            budget = lambda: self.limits.available("jupiter") >= self.cfg.min_jupiter_budget_for_entry
+            jup = self.limits.get("jupiter")
+            # never ask for more than the bucket can hold, or entries would wait forever
+            need = min(self.cfg.min_jupiter_budget_for_entry, jup.capacity) if jup else 0.0
+            budget = lambda: self.limits.available("jupiter") >= need
             for cand, signal, rep in self.rug.run(picked, min(probe, self.cfg.risk.max_position_sol), budget):
                 acc = self.equity.account()
                 size = self.sizer.run(cand, acc, self.exe.tx_fee_sol)

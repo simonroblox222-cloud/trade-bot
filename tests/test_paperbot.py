@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,21 @@ class FakeRugApi:
         return self.data
 
 
+def b58encode(b: bytes) -> str:
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n, out = int.from_bytes(b, "big"), ""
+    while n:
+        n, r = divmod(n, 58)
+        out = alphabet[r] + out
+    return "1" * (len(b) - len(b.lstrip(b"\0"))) + out
+
+
+# real ed25519 public keys (generated with `cryptography`) and two known PDAs
+WALLET_A = b58encode(bytes.fromhex("b9b67c38ccadf8c162a490ea2b8589cbfd09e221ecab774086f09167189115ac"))
+WALLET_B = b58encode(bytes.fromhex("8bed07e04764e32b6c7e426d2eb524e027471756ae76a463940d9f9e53f6be0e"))
+PDA_RAYDIUM = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"
+PDA_CPMM = "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL"
+
 GOOD_API = {"score_normalised": 5, "risks": [], "lpLockedPct": 100}
 
 
@@ -117,6 +133,60 @@ class FillTests(unittest.TestCase):
         b = self.exe.simulate_buy(MINT, 1_000_000_000)
         s = self.exe.simulate_sell(MINT, b.fill_out)
         self.assertLess(s.net_sol, b.net_sol)
+
+
+class SteppedQuotes(FixedQuotes):
+    """Every call returns a price `step` worse than the previous one (market moving against us)."""
+
+    def __init__(self, step):
+        super().__init__()
+        self.step, self.n = step, 0
+
+    def quote(self, i, o, amount, slip):
+        q = super().quote(i, o, amount, slip)
+        f = (1 - self.step) ** self.n
+        self.n += 1
+        out = int(q.out_amount * f)
+        # minOut stays relative to *this* quote, like a real one
+        return Quote(i, o, amount, out, out * (10_000 - slip) // 10_000, q.price_impact_pct, slip, ["Fake"])
+
+
+class LatencyTests(unittest.TestCase):
+    def exe(self, step, latency=2.0, slip=300):
+        slept = []
+        r = C.RiskConfig(latency_seconds=latency, slippage_bps=slip, extra_slippage_bps=100)
+        return PaperExecution(SteppedQuotes(step), r, sleep=slept.append), slept
+
+    def test_fill_at_worse_later_price(self):
+        exe, slept = self.exe(0.01)
+        res = exe.execute_buy(MINT, 1_000_000_000)
+        self.assertEqual(slept, [2.0])
+        self.assertEqual(res.fill.fill_out, int(990_000 * 0.99) * 9900 // 10_000)
+
+    def test_revert_when_price_moves_past_slippage(self):
+        exe, _ = self.exe(0.05)                       # 5 % move > 3 % slippage
+        res = exe.execute_buy(MINT, 1_000_000_000)
+        self.assertIsNone(res.fill)
+        self.assertIn("reverted", res.error)
+        self.assertAlmostEqual(res.fee_lost_sol, 0.000105)
+
+    def test_sell_uses_mark_as_first_quote(self):
+        exe, slept = self.exe(0.01)
+        mark = exe.simulate_sell(MINT, 1_000_000)
+        res = exe.execute_sell(MINT, 1_000_000, mark)
+        self.assertLess(res.fill.fill_out, mark.fill_out)
+        self.assertEqual(slept, [2.0])
+
+    def test_no_latency_no_sleep(self):
+        exe, slept = self.exe(0.05, latency=0)
+        self.assertIsNotNone(exe.execute_buy(MINT, 1_000_000_000).fill)
+        self.assertEqual(slept, [])
+
+    def test_impact_checked_before_sending(self):
+        exe, slept = self.exe(0.0)
+        res = exe.execute_buy(MINT, 1_000_000_000, max_impact_pct=0.5)   # FixedQuotes impact = 1 %
+        self.assertIsNone(res.fill)
+        self.assertEqual((slept, res.fee_lost_sol), ([], 0.0))
 
 
 class RiskTests(unittest.TestCase):
@@ -179,18 +249,31 @@ class RugTests(unittest.TestCase):
         self.assertIn("transfer fee 300 bps", rep.reasons)
 
     def test_holders(self):
-        whale = [Holder("whale", "a", 200_000)] + [Holder(f"w{i}", f"a{i}", 5_000) for i in range(9)]
+        whale = [Holder(WALLET_A, "a", 200_000)] + [Holder(f"w{i}", f"a{i}", 5_000) for i in range(9)]
         rep = self.check(FakeChain(holders=whale))
-        self.assertTrue(any("largest holder" in r for r in rep.reasons))
-        pool = [Holder("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1", "v", 600_000)] + \
-               [Holder(f"w{i}", f"a{i}", 10_000) for i in range(9)]
-        self.assertTrue(self.check(FakeChain(holders=pool)).passed)
+        self.assertTrue(any("largest wallet" in r for r in rep.reasons))
 
-    def test_bonding_curve_excludes_curve_account(self):
-        curve = [Holder("curvePDA", "c", 700_000)] + [Holder(f"w{i}", f"a{i}", 10_000) for i in range(9)]
-        self.assertFalse(self.check(FakeChain(holders=curve)).passed)
+    def test_program_owned_accounts_excluded(self):
+        # PDAs (pool authority, bonding curve) are off-curve: left out even with no allowlist
+        pdas = [Holder(PDA_RAYDIUM, "v", 600_000), Holder(PDA_CPMM, "c", 300_000)]
+        rest = [Holder(f"w{i}", f"a{i}", 10_000) for i in range(9)]
+        self.assertTrue(self.check(FakeChain(holders=pdas + rest), pool_owner_allowlist=[]).passed)
+        # a real ed25519 wallet with the same balance is counted
+        self.assertFalse(self.check(FakeChain(holders=[Holder(WALLET_B, "x", 600_000)] + rest),
+                                    pool_owner_allowlist=[]).passed)
+
+    def test_accounts_of_one_wallet_add_up(self):
+        split = [Holder(WALLET_A, "a1", 60_000), Holder(WALLET_A, "a2", 60_000)] + \
+                [Holder(f"w{i}", f"a{i}", 5_000) for i in range(8)]
+        rep = self.check(FakeChain(holders=split))
+        self.assertTrue(any("largest wallet 12.0%" in r for r in rep.reasons), rep.reasons)
+
+    def test_bonding_curve_flag(self):
+        curve = [Holder(PDA_CPMM, "c", 700_000)] + [Holder(f"w{i}", f"a{i}", 10_000) for i in range(9)]
         rep = self.check(FakeChain(holders=curve), c=cand(is_bonding_curve=True), api={"score_normalised": 5})
         self.assertTrue(rep.passed, rep.reasons)
+        rep = self.check(FakeChain(holders=curve), c=cand(is_bonding_curve=True), allow_bonding_curve=False)
+        self.assertIn("pump.fun bonding curve (not graduated)", rep.reasons)
 
     def test_lp_and_api(self):
         self.assertTrue(any("LP burned/locked" in r for r in self.check(api={**GOOD_API, "lpLockedPct": 10}).reasons))
@@ -210,6 +293,16 @@ class RugTests(unittest.TestCase):
         self.assertTrue(any("round-trip loss" in r for r in rep.reasons))
 
 
+class SolanaKeyTests(unittest.TestCase):
+    def test_on_curve(self):
+        from paperbot.solana_keys import b58decode, is_on_curve, is_wallet
+        self.assertEqual(b58encode(b58decode(WALLET_A)), WALLET_A)
+        self.assertTrue(is_wallet(WALLET_A) and is_wallet(WALLET_B))
+        self.assertFalse(is_wallet(PDA_RAYDIUM) or is_wallet(PDA_CPMM))
+        self.assertTrue(is_on_curve(b58decode("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")))
+        self.assertTrue(is_wallet(None) and is_wallet("not-base58!") and is_wallet("abc"))
+
+
 class JupiterParseTests(unittest.TestCase):
     def test_parse(self):
         payload = {"inAmount": "100000000", "outAmount": "123456", "otherAmountThreshold": "120000",
@@ -222,9 +315,39 @@ class JupiterParseTests(unittest.TestCase):
         self.assertAlmostEqual(q.price_impact_pct, 1.23)
         self.assertEqual(q.route_labels, ["Raydium", "Meteora DLMM"])
 
-    def test_error_returns_none(self):
-        with mock.patch.object(sources, "get_json", side_effect=sources.HttpError("x")):
-            self.assertIsNone(sources.JupiterQuotes(C.ApiConfig()).quote(C.SOL_MINT, MINT, 1, 300))
+    def test_no_route_vs_outage(self):
+        jq = sources.JupiterQuotes(C.ApiConfig())
+        with mock.patch.object(sources, "get_json", side_effect=sources.HttpError("no route", 400)):
+            self.assertIsNone(jq.quote(C.SOL_MINT, MINT, 1, 300))
+        for status in (None, 429, 503):
+            with mock.patch.object(sources, "get_json", side_effect=sources.HttpError("down", status)):
+                with self.assertRaises(sources.SourceUnavailable):
+                    jq.quote(C.SOL_MINT, MINT, 1, 300)
+
+
+class OutageTests(unittest.TestCase):
+    def test_outage_does_not_write_off_or_blacklist(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
+            store = Store(cfg.db_path)
+            world = MockWorld(seed=3)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
+            checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
+            pipe = Pipeline(cfg, world, checker, exe, store, echo=False)
+            while not store.open_positions():
+                world.step()
+                pipe.tick()
+            n_checks = len(store.rugchecks(10_000))
+            with mock.patch.object(world, "quote", side_effect=sources.SourceUnavailable("down")):
+                for _ in range(6):
+                    world.step()
+                    pipe.tick()
+            self.assertTrue(store.open_positions())                    # nothing written off
+            self.assertTrue(all(p["quote_failures"] == 0 for p in store.open_positions()))
+            # tokens that needed a Jupiter quote were postponed, never rejected as "no route"
+            during = store.rugchecks(10_000)[: len(store.rugchecks(10_000)) - n_checks]
+            self.assertFalse(any("route" in r for rc in during for r in rc["reasons"]))
+            self.assertFalse(any(rc["passed"] for rc in during))
 
 
 class PipelineTests(unittest.TestCase):
@@ -233,7 +356,7 @@ class PipelineTests(unittest.TestCase):
             cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
             store = Store(cfg.db_path)
             world = MockWorld(seed=3)
-            exe = make_execution("paper", world, cfg.risk)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
             checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
             pipe = Pipeline(cfg, world, checker, exe, store, echo=False)
             for _ in range(150):
@@ -247,7 +370,11 @@ class PipelineTests(unittest.TestCase):
             # cash ledger: start - buys + sells == cash
             buys = sum(p["cost_sol"] for p in store._rows("SELECT cost_sol FROM positions"))
             sells = sum(p["proceeds_sol"] or 0 for p in store.closed_positions(10_000))
-            self.assertAlmostEqual(cfg.risk.starting_balance_sol - buys + sells, store.get("cash"), places=9)
+            # reverted sells are already in cost_sol; reverted buys only in failed_tx_fees
+            failed_buys = (store.get("failed_tx_fees", 0.0) or 0.0) - sum(
+                p["cost_sol"] - p["size_sol"] - cfg.risk.ata_rent_sol - (cfg.risk.base_fee_sol + cfg.risk.priority_fee_sol)
+                for p in store._rows("SELECT cost_sol, size_sol FROM positions"))
+            self.assertAlmostEqual(cfg.risk.starting_balance_sol - buys + sells - failed_buys, store.get("cash"), places=9)
             # rejected tokens never traded
             rejected = {r["mint"] for r in store.rugchecks(10_000) if not r["passed"]}
             self.assertFalse(rejected & {t["mint"] for t in trades})
@@ -255,6 +382,31 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(st["mode"], "paper")
             self.assertFalse(st["live_enabled"])
             self.assertEqual(st["account"]["wins"] + st["account"]["losses"], st["account"]["closed"])
+
+
+class ConfirmTests(unittest.TestCase):
+    def test_signal_needs_consecutive_scans(self):
+        from paperbot.agents import Scanner
+        good = cand(pair_created_at_ms=int((time.time() - 3600) * 1000))
+        feed = [[good], [good], [], [good], [good], [good]]
+        disc = mock.Mock()
+        disc.candidates.side_effect = feed
+        disc.last_errors = []
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(os.path.join(d, "t.sqlite"))
+            sc = Scanner(C.BotConfig(), disc, store, mock.Mock())
+            got = [len(sc.run(set())) for _ in feed]
+        self.assertEqual(got, [0, 0, 0, 0, 0, 1])   # streak broken by the empty scan
+
+    def test_edge_check(self):
+        from paperbot.edge import edge_check
+        self.assertIn("málo", edge_check([5] * 10, [0.01] * 10)["verdict"])
+        lose = edge_check([-5 + i % 3 for i in range(40)], [-0.01] * 40)
+        self.assertLess(lose["ci90_high"], 0)
+        self.assertIn("stráca", lose["verdict"])
+        lucky = edge_check([300, 250, 200] + [-4] * 37, [0.6, 0.5, 0.4] + [-0.008] * 37)
+        self.assertLess(lucky["pnl_without_best3_sol"], 0)
+        self.assertNotIn("vyzerá kladne", lucky["verdict"])
 
 
 class SourceParseTests(unittest.TestCase):
@@ -377,6 +529,23 @@ class RateLimitTests(unittest.TestCase):
         self.assertEqual(d.last_errors, [])
 
 
+class LowLimitTests(unittest.TestCase):
+    def test_entries_possible_with_small_jupiter_bucket(self):
+        from paperbot.ratelimit import Limits
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"), min_jupiter_budget_for_entry=4)
+            store = Store(cfg.db_path)
+            world = MockWorld(seed=3)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
+            checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
+            limits = Limits({"jupiter": 30})          # bucket capacity 3 < 4
+            pipe = Pipeline(cfg, world, checker, exe, store, echo=False, limits=limits)
+            for _ in range(6):
+                world.step()
+                pipe.tick()
+            self.assertTrue(store.rugchecks())
+
+
 class MarkPacingTests(unittest.TestCase):
     def test_mark_interval_follows_jupiter_share(self):
         from paperbot.agents import EquityAgent
@@ -413,12 +582,12 @@ class BudgetTests(unittest.TestCase):
             cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
             store = Store(cfg.db_path)
             world = MockWorld(seed=3)
-            exe = make_execution("paper", world, cfg.risk)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
             checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
             starved = mock.Mock()
             starved.available.return_value = 0.0
             starved.snapshot.return_value = {}
-            starved.get.return_value = None
+            starved.get.return_value = mock.Mock(capacity=5.0, per_minute=55.0)
             pipe = Pipeline(cfg, world, checker, exe, store, echo=False, limits=starved)
             for _ in range(20):
                 world.step()
