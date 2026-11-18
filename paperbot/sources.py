@@ -79,13 +79,19 @@ class JupiterQuotes:
 
 
 # --------------------------------------------------------------------------- Discovery
+_QUOTE_MINTS = {"So11111111111111111111111111111111111111112",
+                "EPjFWdd5AufqSSqeM2qWZbqZhQXwBcVYQMXb8iP3TJA",   # USDC
+                "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"}  # USDT
 class MarketDiscovery:
     """New mints from DexScreener token profiles + pump.fun newest coins,
     enriched with pair stats from DexScreener (which also indexes pump.fun curves)."""
 
-    def __init__(self, api: ApiConfig, limits: Limits | None = None):
+    def __init__(self, api: ApiConfig, limits: Limits | None = None, pumpportal=None):
         self.api = api
+        self.pumpportal = pumpportal              # PumpPortalFeed (background websocket) or None
         limits = limits or Limits()
+        self.lim_gecko = limits.get("geckoterminal")
+        self._disabled: set[str] = set()         # feed answered 404: endpoint gone, stop asking
         self.lim_profiles = limits.get("dexscreener_profiles")
         self.lim_pairs = limits.get("dexscreener_pairs")
         self.lim_pumpfun = limits.get("pumpfun")
@@ -125,13 +131,48 @@ class MarketDiscovery:
         return [b["tokenAddress"] for b in boosts or []
                 if b.get("chainId") == "solana" and b.get("tokenAddress")]
 
+    def _takeover_mints(self) -> list[str]:
+        rows = get_json(self.api.dexscreener_takeovers_url, self.api.timeout_s,
+                        limiter=self.lim_profiles, block=False)
+        return [r["tokenAddress"] for r in (rows if isinstance(rows, list) else []) if isinstance(r, dict)
+                and r.get("chainId") == "solana" and r.get("tokenAddress")]
+
+    def _gecko_mints(self) -> list[str]:
+        """GeckoTerminal new + trending Solana pools (free, 30 rpm). One page per call, rotating."""
+        urls = self.api.geckoterminal_urls or []
+        if not urls:
+            return []
+        self._gecko_i = getattr(self, "_gecko_i", -1) + 1
+        url = urls[self._gecko_i % len(urls)]
+        data = get_json(url, self.api.timeout_s, headers={"Accept": "application/json"},
+                        limiter=self.lim_gecko, block=False)
+        found = []
+        for pool in (data.get("data") or []) if isinstance(data, dict) else []:
+            rel = (pool.get("relationships") or {}) if isinstance(pool, dict) else {}
+            for side in ("base_token", "quote_token"):
+                tid = ((rel.get(side) or {}).get("data") or {}).get("id") or ""
+                mint = tid.split("_", 1)[1] if tid.startswith("solana_") else ""
+                if mint and mint not in _QUOTE_MINTS:
+                    found.append(mint)
+                    break
+        prev = self._mints_cache.get("geckoterminal", [])
+        return list(dict.fromkeys(found + prev))[:200]   # pages rotate: keep the others' results
+
+    def _pumpportal_mints(self) -> list[str]:
+        if self.pumpportal is None:
+            return []
+        return self.pumpportal.mints()[:100]
+
     def candidates(self) -> list[TokenCandidate]:
         self.last_errors = []
         sourced: dict[str, str] = {}
-        for name, enabled, fn in (("dexscreener", self.api.use_dexscreener, self._dexscreener_mints),
+        for name, enabled, fn in (("pumpportal", self.api.use_pumpportal, self._pumpportal_mints),
+                                  ("dexscreener", self.api.use_dexscreener, self._dexscreener_mints),
+                                  ("geckoterminal", self.api.use_geckoterminal, self._gecko_mints),
+                                  ("takeovers", self.api.use_takeovers, self._takeover_mints),
                                   ("pumpfun", self.api.use_pumpfun, self._pumpfun_mints),
                                   ("boosts", self.api.use_boosts, self._boost_mints)):
-            if not enabled:
+            if not enabled or name in self._disabled:
                 continue
             try:
                 self._mints_cache[name] = fn()
@@ -141,8 +182,11 @@ class MarketDiscovery:
                 if e.blocked_s:
                     self.last_errors.append(f"{name}: {e}. Only this source is skipped for {e.blocked_s / 60:.0f} min,"
                                             " the bot keeps running"
-                                            + (" (pump.fun pairs still come via DexScreener)" if name == "pumpfun" else ""))
+                                            + (" (new pump.fun tokens still come via PumpPortal and DexScreener)" if name == "pumpfun" else ""))
                     self._mints_cache.pop(name, None)
+                elif e.status == 404:
+                    self._disabled.add(name)
+                    self.last_errors.append(f"{name}: {e}. Endpoint not found, this source is off until restart")
                 else:
                     self.last_errors.append(f"{name}: {e}")
             for m in self._mints_cache.get(name, []):
@@ -180,7 +224,12 @@ class MarketDiscovery:
                     self._watch[c.mint][2] = 3
             out.extend(found)
         self.stats = {"feeds": len(set().union(*map(set, self._mints_cache.values()))) if self._mints_cache else 0,
-                      "watchlist": len(self._watch), "pairs": len(out)}
+                      "watchlist": len(self._watch), "pairs": len(out),
+                      "sources": {n: len(v) for n, v in self._mints_cache.items() if v},
+                      "pumpportal": self.pumpportal.status() if self.pumpportal is not None else ""}
+        for c in out:
+            if not c.creator and self.pumpportal is not None:
+                c.creator = self.pumpportal.creator(c.mint)   # dev wallet from the launch event
         for c in out:  # listed in the paid boosts feed = boosted, even if the pair doesn't say so
             if c.mint in boosted and not c.boosts_active:
                 c.boosts_active = 1

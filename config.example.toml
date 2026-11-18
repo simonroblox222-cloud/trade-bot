@@ -16,7 +16,10 @@ solana_rpc_url = "https://api.mainnet-beta.solana.com"   # zadarmo, bez kľúča
 # použi env premennú:  export PAPERBOT_RPC_URL="https://mainnet.helius-rpc.com/?api-key=..."
 # alebo tu:  solana_rpc_url = "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
 use_dexscreener = true
-use_pumpfun = true              # neoficiálne pump.fun frontend API, môže sa zmeniť
+use_pumpfun = true              # neoficiálne pump.fun API; často ho blokuje Cloudflare, bot vtedy pauzne len tento zdroj
+use_pumpportal = true           # pump.fun graduácie + dev peňaženky cez PumpPortal websocket (zadarmo, bez kľúča)
+use_geckoterminal = true        # GeckoTerminal nové a trendujúce Solana pooly (zadarmo, 30 req/min)
+use_takeovers = true            # DexScreener community takeovers
 use_boosts = true               # DexScreener platené boosty ako zdroj; Social ich ráta ako mínus
 watchlist_hours = 12            # tokeny z "latest" zoznamov sa sledujú ďalej, kým nedorastú do min. veku
 watchlist_size = 150            # koľko z nich sa preverí v každom skene (30 na jedno volanie DexScreeneru)
@@ -26,6 +29,7 @@ jupiter = 55
 dexscreener_profiles = 55
 dexscreener_pairs = 250
 pumpfun = 20
+geckoterminal = 25
 rugcheck = 20
 rpc = 90                            # s free Helius kľúčom pokojne 500
 
@@ -58,8 +62,8 @@ losing_streak_pause_minutes = 30
 max_m5_pct = 30.0                   # nenaháňať zvislú sviečku
 max_h1_pct = 150.0
 max_size_vs_liquidity_pct = 2.0
-max_open_bonding_curve = 2
-max_open_same_source = 3
+max_open_bonding_curve = 4
+max_open_same_source = 6
 
 [rug]
 min_liquidity_usd = 20000
@@ -76,7 +80,7 @@ starting_balance_sol = 10
 position_size_pct = 2
 max_position_sol = 0.5
 min_position_sol = 0.05
-max_open_positions = 5
+max_open_positions = 8
 max_total_exposure_pct = 30
 daily_loss_limit_pct = 5
 close_all_on_daily_limit = false
@@ -87,7 +91,7 @@ min_partial_sol = 0.03
 trailing_arm_pct = 20
 trailing_stop_pct = 15
 max_hold_minutes = 120
-token_cooldown_minutes = 60
+token_cooldown_minutes = 20
 max_price_impact_pct = 3
 slippage_bps = 300              # slippage tolerancia v quote (pod minOut by reálny swap zlyhal)
 extra_slippage_bps = 100        # pesimistický fill oproti quote
@@ -99,12 +103,16 @@ latency_seconds = 2.0           # oneskorenie rozhodnutie -> swap; druhý quote 
 
 [strategy]
 min_liquidity_usd = 20000
-min_volume_h1_usd = 25000
-min_pair_age_minutes = 30
+min_volume_h1_usd = 15000
+min_pair_age_minutes = 15
 max_pair_age_hours = 72
-min_price_change_m5_pct = 2
-min_price_change_h1_pct = 5
+min_price_change_m5_pct = 1
+min_price_change_h1_pct = 2
 max_price_change_h1_pct = 300
-min_buy_sell_ratio_m5 = 1.2
+min_buy_sell_ratio_m5 = 1.1
+hype_score = 2.5                # silný organický hype (Social skóre) uvoľní momentum:
+hype_min_price_change_m5_pct = 0
+hype_min_buy_sell_ratio_m5 = 1.0
+hype_min_volume_h1_usd = 10000
 max_candidates_per_tick = 5
-confirm_cycles = 3              # signál musí platiť toľko skenov po sebe
+confirm_cycles = 2              # signál musí platiť toľko skenov po sebe

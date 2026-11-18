@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import time
@@ -395,7 +396,9 @@ class ConfirmTests(unittest.TestCase):
         disc.last_errors = []
         with tempfile.TemporaryDirectory() as d:
             store = Store(os.path.join(d, "t.sqlite"))
-            sc = Scanner(C.BotConfig(), disc, store, mock.Mock())
+            cfg = C.BotConfig()
+            cfg.strategy.confirm_cycles = 3
+            sc = Scanner(cfg, disc, store, mock.Mock())
             got = [len(sc.run(set())) for _ in feed]
         self.assertEqual(got, [0, 0, 0, 0, 0, 1])   # streak broken by the empty scan
 
@@ -442,7 +445,7 @@ class SourceParseTests(unittest.TestCase):
         with mock.patch.object(sources, "get_json", side_effect=sources.HttpError("403")):
             d = sources.MarketDiscovery(C.ApiConfig())
             self.assertEqual(d.candidates(), [])
-            self.assertEqual(len(d.last_errors), 3)  # dexscreener, pumpfun, boosts
+            self.assertEqual(len(d.last_errors), 5)  # dexscreener, geckoterminal, takeovers, pumpfun, boosts
 
     def test_rpc_mint_parse(self):
         res = {"result": {"value": {"data": {"program": "spl-token-2022", "parsed": {"type": "mint", "info": {
@@ -743,7 +746,8 @@ class CriticTests(unittest.TestCase):
         self.assertFalse(v.hard)
         self.assertTrue(self.critic().review(cand(), rugrep(), 0.2, [], [{"pnl_sol": -0.01, "closed_at": now - 7200}] * 3).approved)
         self.assertIn("chasing", self.critic().review(cand(price_change_m5_pct=45), rugrep(), 0.2, [], []).reasons[0])
-        bc = [{"mint": f"b{i}", "symbol": f"B{i}", "source": "pumpfun", "bonding": 1} for i in range(2)]
+        bc = [{"mint": f"b{i}", "symbol": f"B{i}", "source": "pumpfun", "bonding": 1}
+              for i in range(C.CriticConfig().max_open_bonding_curve)]
         self.assertIn("bonding-curve", self.critic().review(cand(is_bonding_curve=True, source="dexscreener"),
                                                             rugrep(), 0.2, bc, []).reasons[0])
         big = cand(price_usd=150.0, price_native=1.0, liquidity_usd=10_000)  # 1 SOL = $150 = 1.5% of pool
@@ -755,7 +759,8 @@ class CriticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
             store = Store(cfg.db_path)
-            world = MockWorld(seed=5)
+            cfg.risk.take_profit_pct = 50.0   # faster turnover in the synthetic market -> more decisions
+            world = MockWorld(seed=3)
             exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
             checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
             mem = MarketMemory()
@@ -946,6 +951,134 @@ class WatchlistTests(unittest.TestCase):
         self.assertIn("watchlist 40", msg)
         self.assertIn("liq 1", msg)
         self.assertIn("m5 1", msg)
+
+
+# ------------------------------------------------ more sources: GeckoTerminal, PumpPortal
+import hashlib  # noqa: E402
+import json as _json  # noqa: E402
+import socket  # noqa: E402
+import threading  # noqa: E402
+from paperbot import pumpportal as PP  # noqa: E402
+
+
+def _server_frame(payload: bytes, opcode: int = 1) -> bytes:   # servers send unmasked frames
+    n = len(payload)
+    head = bytes([0x80 | opcode]) + (bytes([n]) if n < 126 else bytes([126]) + n.to_bytes(2, "big"))
+    return head + payload
+
+
+class MoreSourcesTests(unittest.TestCase):
+    def test_geckoterminal_pools_parsed_to_token_mints(self):
+        data = {"data": [
+            {"relationships": {"base_token": {"data": {"id": "solana_AAA"}},
+                               "quote_token": {"data": {"id": "solana_So11111111111111111111111111111111111111112"}}}},
+            {"relationships": {"base_token": {"data": {"id": "solana_So11111111111111111111111111111111111111112"}},
+                               "quote_token": {"data": {"id": "solana_BBB"}}}},
+            {"relationships": {}}, "junk"]}
+        d = sources.MarketDiscovery(C.ApiConfig())
+        with mock.patch.object(sources, "get_json", return_value=data):
+            self.assertEqual(d._gecko_mints(), ["AAA", "BBB"])
+
+    def test_missing_endpoint_is_switched_off_once(self):
+        def fake(url, *a, **k):
+            if "community-takeovers" in url:
+                raise H.HttpError("HTTP 404 from api.dexscreener.com: Not Found", 404)
+            return []
+        d = sources.MarketDiscovery(C.ApiConfig(use_pumpfun=False, use_geckoterminal=False))
+        with mock.patch.object(sources, "get_json", side_effect=fake) as gj:
+            d.candidates()
+            self.assertEqual(len(d.last_errors), 1)
+            d.candidates()
+            self.assertEqual(d.last_errors, [])
+        self.assertEqual(sum("community-takeovers" in c.args[0] for c in gj.call_args_list), 1)
+
+    def test_frames_roundtrip_and_events(self):
+        fr = PP.encode_frame(b'{"method":"subscribeNewToken"}')
+        buf = bytearray(fr)
+
+        def recv(n):
+            out = bytes(buf[:n]); del buf[:n]; return out
+        self.assertEqual(PP.read_frame(recv), (True, 1, b'{"method":"subscribeNewToken"}'))
+        big = PP.encode_frame(b"x" * 70_000)
+        buf = bytearray(big)
+        self.assertEqual(len(PP.read_frame(recv)[2]), 70_000)
+        self.assertEqual(PP.parse_event({"mint": "M", "txType": "create", "traderPublicKey": "DEV", "symbol": "S"}),
+                         {"mint": "M", "kind": "create", "creator": "DEV", "symbol": "S"})
+        self.assertIsNone(PP.parse_event({"message": "Successfully subscribed"}))
+        self.assertIsNone(PP.parse_event({"mint": "M", "txType": "buy"}))
+
+    def test_feed_against_local_websocket_server(self):
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        got_subs = []
+
+        def serve():
+            conn, _ = srv.accept()
+            req = b""
+            while b"\r\n\r\n" not in req:
+                req += conn.recv(4096)
+            key = [l.split(b": ")[1] for l in req.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key")][0]
+            acc = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+            conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                         b"Sec-WebSocket-Accept: " + acc + b"\r\n\r\n")
+            pend = bytearray()
+
+            def recv(n):
+                while len(pend) < n:
+                    pend.extend(conn.recv(4096))
+                out = bytes(pend[:n]); del pend[:n]; return out
+            for _ in range(2):
+                got_subs.append(_json.loads(PP.read_frame(recv)[2])["method"])
+            conn.sendall(_server_frame(b'{"message":"Successfully subscribed to keys."}'))
+            conn.sendall(_server_frame(_json.dumps({"mint": "NEW1", "txType": "create",
+                                                    "traderPublicKey": "DEV1", "symbol": "A"}).encode()))
+            conn.sendall(_server_frame(b"", 9))   # ping -> client must pong
+            self.assertEqual(PP.read_frame(recv)[1], 0xA)
+            conn.sendall(_server_frame(_json.dumps({"mint": "NEW1", "txType": "migrate"}).encode()))
+            time.sleep(0.5)
+            conn.close()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        feed = PP.PumpPortalFeed(f"ws://127.0.0.1:{port}/api/data", timeout_s=5).start()
+        for _ in range(100):
+            if feed.mints():
+                break
+            time.sleep(0.05)
+        feed.stop()
+        t.join(2)
+        srv.close()
+        self.assertEqual(got_subs, ["subscribeNewToken", "subscribeMigration"])
+        self.assertEqual(feed.mints(), ["NEW1"])
+        self.assertEqual(feed.creator("NEW1"), "DEV1")
+
+    def test_pumpportal_mints_and_creators_reach_candidates(self):
+        feed = mock.Mock()
+        feed.mints.return_value = [MINT]
+        feed.creator.return_value = "DEV9"
+        pair = {"baseToken": {"address": MINT, "symbol": "TOK"}, "quoteToken": {"symbol": "SOL"},
+                "liquidity": {"usd": 50_000}, "dexId": "pumpswap"}
+        api = C.ApiConfig(use_dexscreener=False, use_geckoterminal=False, use_takeovers=False,
+                          use_pumpfun=False, use_boosts=False)
+        d = sources.MarketDiscovery(api, None, feed)
+        with mock.patch.object(sources, "get_json", return_value=[pair]):
+            out = d.candidates()
+        self.assertEqual([(c.mint, c.source, c.creator) for c in out], [(MINT, "pumpportal", "DEV9")])
+
+
+class HypeSignalTests(unittest.TestCase):
+    def test_strong_organic_hype_eases_momentum_but_paid_boost_does_not(self):
+        from paperbot.agents import Scanner
+        now = time.time()
+        sc = Scanner(C.BotConfig(), mock.Mock(), mock.Mock(), mock.Mock())
+        flat = dict(pair_created_at_ms=int((now - 3600) * 1000), price_change_m5_pct=0.2, buys_m5=20, sells_m5=20)
+        self.assertFalse(sc.signal(cand(**flat), now)[0])
+        ok, why = sc.signal(cand(**flat, has_x=True, pf_replies=150), now)
+        self.assertTrue(ok)
+        self.assertIn("hype +3.0", why)
+        self.assertFalse(sc.signal(cand(**flat, has_x=True, pf_replies=150, boosts_active=5), now)[0])
 
 
 if __name__ == "__main__":

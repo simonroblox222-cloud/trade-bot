@@ -33,6 +33,8 @@ Bot nemá pevný interval. Beží tak rýchlo, ako dovolia limity, ktoré sú v 
 | Jupiter quote | 55 | úzke hrdlo; 60 % ide na preceňovanie otvorených pozícií, zvyšok na nové vstupy |
 | DexScreener profiles / pairs | 55 / 250 | |
 | pump.fun | 20 | neoficiálne API |
+| GeckoTerminal | 25 | free 30 req/min, jedna stránka na volanie |
+| PumpPortal | websocket | jedno trvalé spojenie, bez limitu na požiadavky |
 | RugCheck | 20 | bez zverejneného limitu; summary pre RugCheck agenta, full report pre Critica |
 | Solana RPC | 90 | verejné RPC je prísne; s voliteľným free Helius kľúčom ~500. Critic pridáva ~10 volaní na kandidáta (čerstvé peňaženky) |
 
@@ -54,7 +56,7 @@ Scanner → Social → RugCheck → Sizer → Critic → Executor → Logger →
 
 | Agent | Súbor | Úloha |
 |---|---|---|
-| Scanner | `agents.py`, `sources.py` | Nové páry z DexScreener (token profiles, boosty) a pump.fun (najnovšie coiny), štatistiky párov z DexScreener. „Latest“ zoznamy ukazujú token len pár minút, väčšinou skôr, než má 30 min, preto si Scanner každý videný mint drží vo **watchliste** (`watchlist_hours`) a preveruje ho ďalej; mŕtve pooly vyradí. Raz za minútu zapíše jeden riadok: koľko párov preveril a čo ich najčastejšie vyradilo. Vstupný signál: likvidita, objem 1h, vek páru, momentum m5/h1, pomer nákupov/predajov. |
+| Scanner | `agents.py`, `sources.py`, `pumpportal.py` | Nové tokeny zo všetkých free zdrojov: DexScreener (token profiles, community takeovers, boosty), GeckoTerminal (nové a trendujúce Solana pooly), PumpPortal websocket (pump.fun tokeny, ktoré práve opustili bonding curve, a dev peňaženky z ich spustenia) a pump.fun API, ak ho Cloudflare pustí. Štatistiky párov z DexScreener. Silný organický hype (Social skóre od `hype_score`) uvoľní momentum filtre; platené boosty k tomu nepomôžu. „Latest“ zoznamy ukazujú token len pár minút, väčšinou skôr, než má 30 min, preto si Scanner každý videný mint drží vo **watchliste** (`watchlist_hours`) a preveruje ho ďalej; mŕtve pooly vyradí. Raz za minútu zapíše jeden riadok: koľko párov preveril a čo ich najčastejšie vyradilo. Vstupný signál: likvidita, objem 1h, vek páru, momentum m5/h1, pomer nákupov/predajov. |
 | Social | `critic.py` | Hype bez X API a bez scrapovania X: či token odkazuje na X účet, Telegram a web (DexScreener `info.socials`, pump.fun), počet pump.fun komentárov, „king of the hill“. Platený DexScreener boost sa ráta ako **mínus**. Číta sa len prítomnosť a počty, nikdy text (žiadny prompt injection). Tokeny pod `min_score` ďalej nejdú. |
 | RugCheck | `rugcheck.py` | Mint a freeze authority, Token-2022 rozšírenia (permanent delegate, transfer hook, transfer fee…), koncentrácia top holderov (bez AMM vaultov a bonding curve), likvidita, LP burned/locked a skóre z RugCheck API, **simulácia predaja**: quote nákup → predaj späť, odmietne pri chýbajúcej sell route (honeypot) alebo veľkej strate (skrytá daň). |
 | Sizer | `risk.py` | Veľkosť pozície (% equity, strop, minimum), max. počet pozícií, max. celková expozícia, rezerva na poplatky, denný limit straty. |

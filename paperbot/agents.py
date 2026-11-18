@@ -67,6 +67,7 @@ class Scanner:
                  memory: MarketMemory | None = None):
         self.s = cfg.strategy
         self.memory = memory
+        self.social_cfg = cfg.social
         self.cooldown_s = cfg.risk.token_cooldown_minutes * 60
         self.discovery = discovery
         self.store = store
@@ -87,17 +88,24 @@ class Scanner:
         s = self.s
         age_min = (now - c.pair_created_at_ms / 1000) / 60 if c.pair_created_at_ms else None
         ratio = c.buys_m5 / max(c.sells_m5, 1)
+        hype, _ = social_score(c, self.social_cfg)
+        hot = self.social_cfg.enabled and hype >= s.hype_score   # strong organic hype eases momentum
+        min_vol = s.hype_min_volume_h1_usd if hot else s.min_volume_h1_usd
+        min_m5 = s.hype_min_price_change_m5_pct if hot else s.min_price_change_m5_pct
+        min_ratio = s.hype_min_buy_sell_ratio_m5 if hot else s.min_buy_sell_ratio_m5
         checks = [
             (c.liquidity_usd >= s.min_liquidity_usd, f"liq ${c.liquidity_usd:,.0f}"),
-            (c.volume_h1_usd >= s.min_volume_h1_usd, f"vol1h ${c.volume_h1_usd:,.0f}"),
+            (c.volume_h1_usd >= min_vol, f"vol1h ${c.volume_h1_usd:,.0f}"),
             (age_min is not None and s.min_pair_age_minutes <= age_min <= s.max_pair_age_hours * 60,
              f"age {age_min:.0f}m" if age_min is not None else "age ?"),
-            (c.price_change_m5_pct >= s.min_price_change_m5_pct, f"m5 {c.price_change_m5_pct:+.1f}%"),
+            (c.price_change_m5_pct >= min_m5, f"m5 {c.price_change_m5_pct:+.1f}%"),
             (s.min_price_change_h1_pct <= c.price_change_h1_pct <= s.max_price_change_h1_pct,
              f"h1 {c.price_change_h1_pct:+.1f}%"),
-            (ratio >= s.min_buy_sell_ratio_m5, f"buys/sells {ratio:.2f}"),
+            (ratio >= min_ratio, f"buys/sells {ratio:.2f}"),
             (s.allow_bonding_curve or not c.is_bonding_curve, "bonding curve" if c.is_bonding_curve else "amm"),
         ]
+        if hot:
+            checks.append((True, f"hype {hype:+.1f} (looser momentum)"))
         failed = [txt for ok, txt in checks if not ok]
         return (not failed), ("momentum: " + ", ".join(t for _, t in checks)) if not failed else ", ".join(failed)
 
@@ -154,7 +162,10 @@ class Scanner:
                          + f"{self._scans} scan(s), ~{len(cands)} pairs checked"
                          + (f" (watchlist {st['watchlist']})" if st.get("watchlist") else "")
                          + f", now {len(passing)} pass the signal ({waiting} still confirming)."
-                         f" Most common misses per scan: {misses}")
+                         + (" Sources: " + ", ".join(f"{k} {v}" for k, v in (st.get("sources") or {}).items()) + "."
+                            if st.get("sources") else "")
+                         + f" Most common misses per scan: {misses}."
+                         + (f" PumpPortal: {st['pumpportal']}." if st.get("pumpportal") else ""))
             self._misses, self._scans, self._summary_at = {}, 0, now
         for c, why in picked:
             if now - self._logged.get(c.mint, 0) > 300:  # don't repeat the same pick every cycle

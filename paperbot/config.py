@@ -34,13 +34,26 @@ class ApiConfig:
     # unofficial: coins created by a wallet (dev history). Unverified endpoint, failures only add a note.
     pumpfun_creator_coins_url: str = ("https://frontend-api-v3.pump.fun/coins/user-created-coins/{creator}"
                                       "?offset=0&limit=50&includeNsfw=true")
+    # free extra discovery sources (no key)
+    geckoterminal_urls: list = field(default_factory=lambda: [
+        "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=1",
+        "https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=2",
+        "https://api.geckoterminal.com/api/v2/networks/solana/trending_pools?page=1",
+    ])
+    dexscreener_takeovers_url: str = "https://api.dexscreener.com/community-takeovers/latest/v1"
+    # pump.fun graduations + creator wallets over PumpPortal's free websocket (replaces the
+    # Cloudflare-protected pump.fun API for discovery)
+    pumpportal_ws_url: str = "wss://pumpportal.fun/api/data"
     use_dexscreener: bool = True
+    use_geckoterminal: bool = True
+    use_takeovers: bool = True
+    use_pumpportal: bool = True
     use_pumpfun: bool = True
     use_boosts: bool = True             # boosted tokens as a discovery source (flagged as paid hype)
     # "latest" feeds only show tokens for a few minutes, usually before they're old enough to
     # pass the signal. Keep re-checking every mint we've seen for this long (DexScreener pairs).
     watchlist_hours: float = 12.0
-    watchlist_size: int = 150           # mints re-checked per scan (30 per DexScreener call)
+    watchlist_size: int = 240           # mints re-checked per scan (30 per DexScreener call)
     timeout_s: float = 10.0
 
 
@@ -53,6 +66,7 @@ class RateLimitConfig:
     dexscreener_profiles: float = 55  # token-profiles: 60 rpm
     dexscreener_pairs: float = 250    # tokens/pairs: 300 rpm
     pumpfun: float = 20               # unofficial API, be gentle
+    geckoterminal: float = 25         # free public API: 30 rpm
     rugcheck: float = 20              # no published limit for keyless use
     rpc: float = 90                   # public mainnet-beta is strict, esp. getTokenLargestAccounts
 
@@ -100,8 +114,8 @@ class CriticConfig:
     max_volume_to_liquidity_h1: float = 15.0
     # behaviour
     reject_copycat_symbol: bool = True
-    max_open_bonding_curve: int = 2
-    max_open_same_source: int = 3
+    max_open_bonding_curve: int = 4
+    max_open_same_source: int = 6
     losing_streak: int = 3
     losing_streak_pause_minutes: float = 30.0
     max_m5_pct: float = 30.0               # chasing a vertical candle
@@ -145,7 +159,7 @@ class RiskConfig:
     position_size_pct: float = 2.0       # % of equity per trade
     max_position_sol: float = 0.5
     min_position_sol: float = 0.05
-    max_open_positions: int = 5
+    max_open_positions: int = 8
     max_total_exposure_pct: float = 30.0  # open positions cost / equity
     daily_loss_limit_pct: float = 5.0     # vs equity at UTC day start
     close_all_on_daily_limit: bool = False
@@ -158,7 +172,7 @@ class RiskConfig:
     trailing_stop_pct: float = 15.0       # from peak, once armed
     trailing_arm_pct: float = 20.0        # arm trailing after +X %
     max_hold_minutes: float = 120.0
-    token_cooldown_minutes: float = 60.0
+    token_cooldown_minutes: float = 20.0
     max_price_impact_pct: float = 3.0
     # costs
     slippage_bps: int = 300               # sent to Jupiter (tx would fail below threshold)
@@ -174,16 +188,21 @@ class RiskConfig:
 @dataclass
 class StrategyConfig:
     min_liquidity_usd: float = 20_000
-    min_volume_h1_usd: float = 25_000
-    min_pair_age_minutes: float = 30
+    min_volume_h1_usd: float = 15_000
+    min_pair_age_minutes: float = 15
     max_pair_age_hours: float = 72
-    min_price_change_m5_pct: float = 2.0
-    min_price_change_h1_pct: float = 5.0
+    min_price_change_m5_pct: float = 1.0
+    min_price_change_h1_pct: float = 2.0
     max_price_change_h1_pct: float = 300.0
-    min_buy_sell_ratio_m5: float = 1.2
+    min_buy_sell_ratio_m5: float = 1.1
+    # strong organic hype (Social score, paid boosts count against it) eases the momentum checks
+    hype_score: float = 2.5               # e.g. X link + 100 pump.fun comments, or X + TG + KOTH
+    hype_min_price_change_m5_pct: float = 0.0
+    hype_min_buy_sell_ratio_m5: float = 1.0
+    hype_min_volume_h1_usd: float = 10_000
     max_candidates_per_tick: int = 5
     allow_bonding_curve: bool = True      # trade pump.fun tokens before graduation
-    confirm_cycles: int = 3               # signal must pass this many scans in a row
+    confirm_cycles: int = 2               # signal must pass this many scans in a row
 
 
 @dataclass

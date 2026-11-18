@@ -31,7 +31,11 @@ def build(cfg, mock: bool, seed: int):
         discovery = quotes = onchain = rug_api = pumpfun = world
     else:
         from .sources import JupiterQuotes, MarketDiscovery, PumpFunApi, RugCheckApi, SolanaRpc
-        discovery, quotes = MarketDiscovery(cfg.api, limits), JupiterQuotes(cfg.api, limits)
+        feed = None
+        if cfg.api.use_pumpportal and cfg.api.pumpportal_ws_url:
+            from .pumpportal import PumpPortalFeed
+            feed = PumpPortalFeed(cfg.api.pumpportal_ws_url).start()
+        discovery, quotes = MarketDiscovery(cfg.api, limits, feed), JupiterQuotes(cfg.api, limits)
         onchain, rug_api = SolanaRpc(cfg.api, limits), RugCheckApi(cfg.api, limits)
         pumpfun = PumpFunApi(cfg.api, limits)
     # mock market only moves between cycles, so waiting out the latency would change nothing
