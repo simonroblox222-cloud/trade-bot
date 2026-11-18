@@ -5,3 +5,7 @@ data_cache/
 logs/
 reports/
 .pytest_cache/
+config.toml
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

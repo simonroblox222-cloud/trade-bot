@@ -1,0 +1,58 @@
+# Skopíruj na config.toml a uprav. Všetky kľúče sú voliteľné (predvolené hodnoty sú v paperbot/config.py).
+# Live režim sa NEDÁ zapnúť konfiguráciou: mode musí byť "paper".
+mode = "paper"
+tick_seconds = 20
+db_path = "paperbot.sqlite"
+dashboard_host = "127.0.0.1"
+dashboard_port = 8787
+
+[api]
+jupiter_quote_url = "https://lite-api.jup.ag/swap/v1/quote"
+# jupiter_api_key = ""          # ak používaš api.jup.ag (posiela sa ako x-api-key); NIE je to kľúč k peňaženke
+solana_rpc_url = "https://api.mainnet-beta.solana.com"   # verejné RPC má prísne limity, lepšie vlastný Helius/Triton endpoint
+use_dexscreener = true
+use_pumpfun = true              # neoficiálne pump.fun frontend API, môže sa zmeniť
+
+[rug]
+min_liquidity_usd = 20000
+max_top10_holders_pct = 30
+max_single_holder_pct = 10
+min_lp_locked_pct = 90          # LP burned/locked podľa RugCheck
+require_rugcheck_api = false
+max_rugcheck_score_normalised = 50
+max_roundtrip_loss_pct = 8      # simulácia nákup -> predaj cez Jupiter quote
+allow_bonding_curve = true
+
+[risk]
+starting_balance_sol = 10
+position_size_pct = 2
+max_position_sol = 0.5
+min_position_sol = 0.05
+max_open_positions = 5
+max_total_exposure_pct = 30
+daily_loss_limit_pct = 5
+close_all_on_daily_limit = false
+stop_loss_pct = 20
+take_profit_pct = 50
+trailing_arm_pct = 20
+trailing_stop_pct = 15
+max_hold_minutes = 120
+token_cooldown_minutes = 60
+max_price_impact_pct = 3
+slippage_bps = 300              # slippage tolerancia v quote (pod minOut by reálny swap zlyhal)
+extra_slippage_bps = 100        # pesimistický fill oproti quote
+base_fee_sol = 0.000005
+priority_fee_sol = 0.0001
+jito_tip_sol = 0.0
+ata_rent_sol = 0.00203928
+
+[strategy]
+min_liquidity_usd = 20000
+min_volume_h1_usd = 25000
+min_pair_age_minutes = 30
+max_pair_age_hours = 72
+min_price_change_m5_pct = 2
+min_price_change_h1_pct = 5
+max_price_change_h1_pct = 300
+min_buy_sell_ratio_m5 = 1.2
+max_candidates_per_tick = 5
