@@ -586,7 +586,7 @@ class LowLimitTests(unittest.TestCase):
 
 class MarkPacingTests(unittest.TestCase):
     def test_mark_interval_follows_jupiter_share(self):
-        from paperbot.agents import EquityAgent
+        from paperbot.agents import EquityAgent, Logger
         with tempfile.TemporaryDirectory() as d:
             cfg = C.BotConfig(jupiter_mark_share=0.6)
             store = Store(os.path.join(d, "t.sqlite"))
@@ -1297,6 +1297,22 @@ class BlindExitTests(unittest.TestCase):
             pipe.scanner.run.assert_not_called()
             limits.get("jupiter").succeeded()
             self.assertIsNone(pipe.exits_blind())
+
+
+class DailyLimitTests(unittest.TestCase):
+    def test_raised_limit_lifts_a_stale_pause(self):
+        from paperbot.agents import EquityAgent, Logger
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
+            store = Store(cfg.db_path)
+            eq = EquityAgent(cfg, mock.Mock(), store, Logger(store, echo=False))
+            eq.check_day()
+            store.set("cash", 9.4)                 # -6 % today
+            cfg.risk.daily_loss_limit_pct = 5.0
+            self.assertTrue(eq.check_day().halted)
+            cfg.risk.daily_loss_limit_pct = 10.0   # user raised it and restarted
+            self.assertFalse(eq.check_day().halted)
+            self.assertFalse(store.get("halted"))
 
 
 if __name__ == "__main__":

@@ -554,12 +554,19 @@ class EquityAgent:
             self.log.log("Equity", "info", f"new UTC day {today}, start equity {acc.equity:.4f} SOL")
             acc.halted = False
         start = self.store.get("day_start_equity")
-        if not acc.halted and daily_limit_hit(start, acc.equity, self.r):
-            self.store.set("halted", True)
-            acc.halted = True
+        # re-evaluated every cycle against the CURRENT limit: a raised limit in config.toml
+        # lifts the pause right after a restart instead of keeping a stale flag for the day
+        hit = daily_limit_hit(start, acc.equity, self.r)
+        if hit and not acc.halted:
             self.log.log("Equity", "error",
                          f"DAILY LOSS LIMIT: equity {acc.equity:.4f} vs start {start:.4f} SOL "
                          f"(-{self.r.daily_loss_limit_pct}%), new entries paused")
+        elif acc.halted and not hit:
+            self.log.log("Equity", "info", f"daily loss limit -{self.r.daily_loss_limit_pct}% no longer hit "
+                         f"(equity {acc.equity:.4f} vs start {start:.4f} SOL), entries resume")
+        if hit != acc.halted:
+            self.store.set("halted", hit)
+            acc.halted = hit
         return acc
 
     def snapshot(self) -> Account:
