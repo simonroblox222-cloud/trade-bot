@@ -288,12 +288,16 @@ class RugTests(unittest.TestCase):
 
     def test_lp_and_api(self):
         self.assertTrue(any("LP burned/locked" in r for r in self.check(api={**GOOD_API, "lpLockedPct": 10}).reasons))
-        self.assertIn("LP lock status unknown", self.check(api={"score_normalised": 1}).warnings)
+        self.assertIn("LP lock status unknown", self.check(api={"score_normalised": 1}).reasons)
+        self.assertIn("LP lock status unknown",
+                      self.check(api={"score_normalised": 1}, require_lp_data=False).warnings)
         danger = {**GOOD_API, "risks": [{"name": "Freeze Authority still enabled", "level": "danger"}]}
         self.assertFalse(self.check(api=danger).passed)
         self.assertFalse(self.check(api={**GOOD_API, "score_normalised": 80}).passed)
-        self.assertIn("RugCheck API unavailable", self.check(api=None).warnings)
-        self.assertFalse(self.check(api=None, require_rugcheck_api=True).passed)
+        self.assertIn("RugCheck API unavailable", self.check(api=None, require_rugcheck_api=False).warnings)
+        down = self.check(api=None)            # default: RugCheck down = retry later, never blacklist
+        self.assertFalse(down.passed)
+        self.assertTrue(down.transient)
 
     def test_liquidity(self):
         self.assertFalse(self.check(c=cand(liquidity_usd=5_000)).passed)
@@ -708,10 +712,18 @@ class CriticTests(unittest.TestCase):
         v = self.critic().review(cand(), rugrep(), 0.2, [], [])
         self.assertTrue(v.approved, v.reasons)
         self.assertTrue(any("SOL price" in n for n in v.notes))
-        v = self.critic(rug_api=FakeReport(None), pumpfun=FakePump(None)).review(
+        cfg = C.BotConfig()
+        cfg.critic.require_full_report = False
+        v = Critic(cfg.critic, cfg.rug, MarketMemory(), rug_api=FakeReport(None), pumpfun=FakePump(None)).review(
             cand(creator="DEV"), rugrep(), 0.2, [], [])
         self.assertTrue(v.approved)
         self.assertIn("RugCheck report unavailable", v.notes)
+        # default: no RugCheck report = soft reject (wait and retry), not approve and not blacklist
+        v = self.critic(rug_api=FakeReport(None), pumpfun=FakePump(None)).review(
+            cand(creator="DEV"), rugrep(), 0.2, [], [])
+        self.assertFalse(v.approved)
+        self.assertFalse(v.hard)
+        self.assertIn("RugCheck report unavailable", v.reasons[0])
 
     def test_insiders_bundles_and_dev_balance_rejected(self):
         rep = {"rugged": False, "creatorBalance": 90_000, "token": {"supply": 1_000_000}, "totalHolders": 50,
@@ -1150,10 +1162,11 @@ class RunnerTests(unittest.TestCase):
         # +200 % and 2 h old: a runner in profit stays, a normal position would time out
         self.assertIsNone(exit_reason(1.0, 3.0, 3.1, 120, r, runner=True))
         # past max hold: a position in profit keeps riding, flat/losing ones go
-        self.assertIsNone(exit_reason(1.0, 1.05, 1.05, 120, r))
-        self.assertIn("time exit", exit_reason(1.0, 1.005, 1.05, 120, r))
+        self.assertIsNone(exit_reason(1.0, 1.08, 1.08, 90, r))
+        self.assertIn("time exit", exit_reason(1.0, 1.04, 1.05, 90, r))     # +4 %: below the 5 % keep
+        self.assertIn("time exit", exit_reason(1.0, 1.08, 1.08, 120, r))    # 2 h hard limit without partial
         self.assertIn("time exit", exit_reason(1.0, 0.95, 1.0, 120, r))
-        self.assertIn("from peak", exit_reason(1.0, 1.05, 1.15, 120, r))
+        self.assertIn("from peak", exit_reason(1.0, 1.06, 1.15, 90, r))
         # runner trails 20 % from peak, not 7 %
         self.assertIsNone(exit_reason(1.0, 2.6, 3.0, 5, r, runner=True))
         self.assertIn("runner", exit_reason(1.0, 2.3, 3.0, 5, r, runner=True))
@@ -1261,6 +1274,28 @@ class AntiSpikeTests(unittest.TestCase):
         why = exit_reason(0.200, 0.163, 0.200, 1, r, stop_base=0.188)
         self.assertIn("stop-loss", why)
         self.assertIn("since entry", why)
+
+
+class BlindExitTests(unittest.TestCase):
+    def test_no_new_buys_while_jupiter_cannot_price_open_positions(self):
+        from paperbot.ratelimit import Limits
+        with tempfile.TemporaryDirectory() as d:
+            cfg = C.BotConfig(db_path=os.path.join(d, "t.sqlite"))
+            store = Store(cfg.db_path)
+            world = MockWorld(seed=3)
+            exe = make_execution("paper", world, cfg.risk, sleep=lambda _s: None)
+            checker = RugChecker(cfg.rug, world, world, world, cfg.risk.slippage_bps)
+            limits = Limits({"jupiter": 55})
+            pipe = Pipeline(cfg, world, checker, exe, store, echo=False, limits=limits)
+            self.assertIsNone(pipe.exits_blind())
+            limits.get("jupiter").went_down()
+            limits.get("jupiter").went_down()
+            self.assertIn("Jupiter timing out", pipe.exits_blind())
+            pipe.scanner.run = mock.Mock(return_value=[])
+            pipe.tick()
+            pipe.scanner.run.assert_not_called()
+            limits.get("jupiter").succeeded()
+            self.assertIsNone(pipe.exits_blind())
 
 
 if __name__ == "__main__":

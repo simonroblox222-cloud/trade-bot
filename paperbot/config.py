@@ -95,6 +95,7 @@ class CriticConfig:
     enabled: bool = True
     # RugCheck full report
     use_full_report: bool = True
+    require_full_report: bool = True      # report unavailable = wait 2 min, not approve
     max_insider_pct: float = 10.0          # % of supply held by flagged insiders
     max_insider_networks: int = 0          # connected wallet clusters (bundles)
     max_creator_pct: float = 5.0           # dev still holds more -> dump risk
@@ -145,11 +146,11 @@ class RugConfig:
         "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",  # Raydium CPMM authority
     ])
     use_rugcheck_api: bool = True
-    require_rugcheck_api: bool = False  # if True, API outage = reject
+    require_rugcheck_api: bool = True   # RugCheck down / no report yet = wait and retry, never buy blind
     max_rugcheck_score_normalised: float = 50.0
     reject_rugcheck_danger: bool = True
     min_lp_locked_pct: float = 90.0  # burned counts as locked (RugCheck lpLockedPct); 0 = ignore
-    require_lp_data: bool = False    # True = reject when LP lock info is unknown
+    require_lp_data: bool = True     # reject when RugCheck answered but LP lock info is unknown
     # pump.fun bonding-curve tokens have no LP yet (curve program holds reserves)
     allow_bonding_curve: bool = True
     max_roundtrip_loss_pct: float = 8.0  # buy->sell quote round trip (tax/honeypot heuristic)
@@ -177,7 +178,9 @@ class RiskConfig:
     runner_trailing_stop_pct: float = 20.0  # after the first partial sale: room for a big move
     trailing_arm_pct: float = 10.0        # arm trailing after +X %
     max_hold_minutes: float = 30.0
-    time_exit_keep_pnl_pct: float = 1.0      # past max hold, keep a position only while above this profit
+    time_exit_keep_pnl_pct: float = 5.0      # past max hold, keep a position only while above this profit
+    max_hold_profit_minutes: float = 120.0   # hard limit for a position in profit that never hit a partial
+    pause_entries_when_exits_blind: bool = True  # no new buys while Jupiter can't price open positions
     token_cooldown_minutes: float = 20.0
     max_price_impact_pct: float = 3.0
     # costs

@@ -586,6 +586,7 @@ class Pipeline:
         self.rug = RugGuard(checker, store, self.log)
         self.sizer = Sizer(cfg, self.log)
         self.critic = CriticAgent(cfg, critic or Critic(cfg.critic, cfg.rug, self.memory), store, self.log)
+        self._blind_logged = 0.0
         self.executor = Executor(cfg, exe, store, self.log)
         jup = self.limits.get("jupiter")
         self.equity = EquityAgent(cfg, exe, store, self.log, jup.per_minute if jup else None)
@@ -605,6 +606,23 @@ class Pipeline:
                              + (f" (APIs pausing: {', '.join(f'{n} {s:.0f}s' for n, s in waits.items())})" if waits
                                 else " (slow API responses / timeouts; slow APIs are skipped for 15 s after a timeout)"))
 
+    def exits_blind(self) -> str | None:
+        """Jupiter is our only exit price. While it times out or open positions can't be quoted,
+        a stop-loss can't fire (one token fell -43 % this way), so no new positions meanwhile."""
+        if not self.cfg.risk.pause_entries_when_exits_blind:
+            return None
+        jup = self.limits.get("jupiter") if self.limits else None
+        if jup is not None:
+            timeouts, paused = getattr(jup, "timeouts", 0), getattr(jup, "paused_until", 0)
+            if isinstance(timeouts, int) and timeouts >= 2:
+                return f"Jupiter timing out ({timeouts}x in a row), open positions can't be priced"
+            if isinstance(paused, float) and paused > jup.clock():
+                return "Jupiter paused (rate limit), open positions can't be priced"
+        stuck = [p["symbol"] for p in self.store.open_positions() if p["quote_failures"]]
+        if stuck:
+            return f"no sell quote for {', '.join(stuck[:3])}"
+        return None
+
     def _tick(self) -> Account:
         force = self.equity.quick_check(self.scanner.discovery)
         marks = self.equity.mark(force=force)
@@ -617,6 +635,13 @@ class Pipeline:
             self.scanner.reset_streaks()
         if not acc.halted and acc.open_count >= self.cfg.risk.max_open_positions:
             self.log.status("Scanner", f"idle: {acc.open_count}/{self.cfg.risk.max_open_positions} positions open")
+        elif not acc.halted and (blind := self.exits_blind()):
+            # if we can't price (= can't sell) what we hold, don't buy more of anything
+            self.scanner.reset_streaks()
+            self.log.status("Scanner", f"no new buys: {blind}", "warn")
+            if time.time() - self._blind_logged > 120:
+                self._blind_logged = time.time()
+                self.log.log("Critic", "warn", f"new buys paused: {blind}")
         elif not acc.halted:
             held = {p["mint"] for p in self.store.open_positions()}
             picked = self.social.run(self.scanner.run(held))

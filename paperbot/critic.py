@@ -225,6 +225,8 @@ class Critic:
             return None
         r = self.rug_api.report(c.mint)
         if not isinstance(r, dict):
+            if k.require_full_report:
+                raise SourceUnavailable("RugCheck report unavailable")
             notes.append("RugCheck report unavailable")
             return None
         if r.get("rugged"):
@@ -314,6 +316,11 @@ class Critic:
             return v
         reasons, notes = self.rug_data(c, rep)
         v.notes.extend(notes)
+        down = [n for n in notes if n.startswith("data source down")]
+        if down and not reasons:   # missing anti-rug data: wait and retry (soft), never buy blind
+            v.reasons.append(down[0])
+            v.approved = False
+            return v
         if reasons:
             v.reasons.extend(reasons)
             v.hard = True

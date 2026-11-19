@@ -72,7 +72,8 @@ min_liquidity_usd = 20000
 max_top10_holders_pct = 30
 max_single_holder_pct = 10
 min_lp_locked_pct = 90          # LP burned/locked podľa RugCheck
-require_rugcheck_api = false
+require_rugcheck_api = true    # RugCheck nedostupný = počkať a skúsiť znova, nekupovať naslepo
+require_lp_data = true         # neznámy stav LP = nekupovať
 max_rugcheck_score_normalised = 50
 max_roundtrip_loss_pct = 8      # simulácia nákup -> predaj cez Jupiter quote
 allow_bonding_curve = true
@@ -95,7 +96,9 @@ min_partial_sol = 0.03
 trailing_arm_pct = 10
 trailing_stop_pct = 7
 max_hold_minutes = 30
-time_exit_keep_pnl_pct = 1.0   # past max hold a position in profit above this keeps running (trailing stop)
+time_exit_keep_pnl_pct = 5.0   # po max_hold beží ďalej len pozícia v zisku nad toto (trailing stop)
+max_hold_profit_minutes = 120  # aj ziskovú pozícia bez čiastočného predaja predá najneskôr po tomto
+pause_entries_when_exits_blind = true  # nekupovať, kým Jupiter nevie oceniť otvorené pozície
 token_cooldown_minutes = 20
 max_price_impact_pct = 3
 slippage_bps = 300              # slippage tolerancia v quote (pod minOut by reálny swap zlyhal)

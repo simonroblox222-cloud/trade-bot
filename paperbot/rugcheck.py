@@ -78,7 +78,9 @@ class RugChecker:
         if c.use_rugcheck_api and self.rug_api is not None:
             s = self.rug_api.summary(cand.mint)
             if s is None:
-                (rep.reasons if c.require_rugcheck_api else rep.warnings).append("RugCheck API unavailable")
+                if c.require_rugcheck_api:   # don't buy blind: retry later, don't blacklist
+                    raise SourceUnavailable("RugCheck API unavailable")
+                rep.warnings.append("RugCheck API unavailable")
             else:
                 score = s.get("score_normalised")
                 rep.rugcheck_score = float(score) if score is not None else None

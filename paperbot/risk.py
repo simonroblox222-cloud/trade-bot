@@ -53,7 +53,7 @@ def exit_reason(cost: float, value: float, peak: float, held_min: float, r: Risk
     if held_min >= r.max_hold_minutes:
         # time limit is for positions that go nowhere or lose; one in profit is not dumped,
         # it keeps riding until the profit is gone or the trailing stop takes it
-        if pnl <= r.time_exit_keep_pnl_pct:
+        if pnl <= r.time_exit_keep_pnl_pct or (not runner and held_min >= r.max_hold_profit_minutes):
             return f"time exit after {held_min:.0f} min at {pnl:+.1f}%"
         if not runner and value <= peak * (1 - trail / 100):
             return (f"time exit after {held_min:.0f} min at {pnl:+.1f}% "
