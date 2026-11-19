@@ -120,8 +120,8 @@ class CriticConfig:
     reject_copycat_symbol: bool = True
     max_open_bonding_curve: int = 4
     max_open_same_source: int = 6
-    losing_streak: int = 3
-    losing_streak_pause_minutes: float = 10.0
+    losing_streak: int = 5
+    losing_streak_pause_minutes: float = 5.0
     max_m5_pct: float = 60.0               # chasing a vertical candle
     max_h1_pct: float = 400.0
     max_size_vs_liquidity_pct: float = 2.0
@@ -160,12 +160,12 @@ class RugConfig:
 @dataclass
 class RiskConfig:
     starting_balance_sol: float = 10.0
-    position_size_pct: float = 2.0       # % of equity per trade
+    position_size_pct: float = 1.5       # % of equity per trade (smaller = more trades fit the limits)
     max_position_sol: float = 0.5
     min_position_sol: float = 0.05
-    max_open_positions: int = 8
+    max_open_positions: int = 12
     max_total_exposure_pct: float = 30.0  # open positions cost / equity
-    daily_loss_limit_pct: float = 5.0     # vs equity at UTC day start
+    daily_loss_limit_pct: float = 10.0    # vs equity at UTC day start
     close_all_on_daily_limit: bool = False
     # fast in, fast out: bank small gains and move on to the next token
     stop_loss_pct: float = 12.0
@@ -181,7 +181,7 @@ class RiskConfig:
     time_exit_keep_pnl_pct: float = 5.0      # past max hold, keep a position only while above this profit
     max_hold_profit_minutes: float = 120.0   # hard limit for a position in profit that never hit a partial
     pause_entries_when_exits_blind: bool = True  # no new buys while Jupiter can't price open positions
-    token_cooldown_minutes: float = 20.0
+    token_cooldown_minutes: float = 10.0
     max_price_impact_pct: float = 3.0
     # costs
     slippage_bps: int = 300               # sent to Jupiter (tx would fail below threshold)

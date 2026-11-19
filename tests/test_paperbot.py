@@ -782,9 +782,10 @@ class CriticTests(unittest.TestCase):
 
     def test_discipline_rules_are_soft(self):
         now = time.time()
-        losses = [{"pnl_sol": -0.01, "closed_at": now - 60}] * 3
+        losses = [{"pnl_sol": -0.01, "closed_at": now - 60}] * 5
+        self.assertTrue(self.critic().review(cand(), rugrep(), 0.2, [], losses[:4]).approved)
         v = self.critic().review(cand(), rugrep(), 0.2, [], losses)
-        self.assertIn("3 losses in a row", v.reasons[0])
+        self.assertIn("5 losses in a row", v.reasons[0])
         self.assertFalse(v.hard)
         self.assertTrue(self.critic().review(cand(), rugrep(), 0.2, [], [{"pnl_sol": -0.01, "closed_at": now - 7200}] * 3).approved)
         self.assertIn("chasing", self.critic().review(cand(price_change_m5_pct=75), rugrep(), 0.2, [], []).reasons[0])
@@ -1228,7 +1229,7 @@ class NoSpamTests(unittest.TestCase):
                 sz.run(cand(), acc, 0.0001)
             self.assertEqual(sum(e["agent"] == "Sizer" for e in store.events()), 1)
             now = time.time()
-            for i in range(3):
+            for i in range(5):
                 store.insert("positions", mint=f"L{i}", symbol="L", source="x", status="closed", opened_at=now - 300,
                              closed_at=now - 60, size_sol=0.2, cost_sol=0.2, token_amount=1, decimals=6,
                              entry_reason="t", pnl_sol=-0.01, pnl_pct=-5, fees_sol=0)
