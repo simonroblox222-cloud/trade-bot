@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paperbot terminal</title>
+<style>
+:root{
+  --bg:#07090a; --panel:#0c1012; --line:#1d2a26; --fg:#b8f5c8; --dim:#5f7d6c; --hi:#e8fff0;
+  --green:#3ef08a; --red:#ff5f6d; --amber:#ffc24b; --cyan:#5ad8ff; --violet:#c08bff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 ui-monospace,"JetBrains Mono","SFMono-Regular",Menlo,Consolas,monospace}
+body{padding:14px 16px 40px;max-width:1500px;margin:0 auto}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(0deg,rgba(255,255,255,.018) 0 1px,transparent 1px 3px)}
+h2{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin:0 0 8px;font-weight:600}
+.top{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px}
+.brand{color:var(--hi);font-weight:700;letter-spacing:.06em}
+.brand b{color:var(--green)}
+.badge{border:1px solid var(--amber);color:var(--amber);padding:2px 8px;font-size:11px;letter-spacing:.08em}
+.badge.halt{border-color:var(--red);color:var(--red);animation:blink 1s steps(2) infinite}
+.muted{color:var(--dim)}
+.right{margin-left:auto}
+@keyframes blink{50%{opacity:.35}}
+.panel{background:var(--panel);border:1px solid var(--line);padding:10px 12px;min-width:0}
+.pipe{display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:12px}
+.agent{position:relative;border:1px solid var(--line);background:var(--panel);padding:8px 10px;min-width:0}
+.agent:not(:last-child):after{content:"→";position:absolute;right:-9px;top:50%;transform:translateY(-50%);color:var(--dim);z-index:1}
+.agent .nm{color:var(--hi);font-weight:700}
+.agent .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px}
+.agent.ok .dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+.agent.halted .dot{background:var(--red);box-shadow:0 0 6px var(--red)}
+.agent.stale .dot{background:var(--amber)}
+.agent .sum{color:var(--fg);font-size:11.5px;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent .age{color:var(--dim);font-size:11px}
+.api{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11.5px;color:var(--dim);margin:-4px 0 12px}
+.api b{color:var(--fg);font-weight:600}
+.api .bar{display:inline-block;width:46px;height:6px;border:1px solid var(--line);vertical-align:middle;margin:0 4px}
+.api .bar i{display:block;height:100%;background:var(--green)}
+.api .hot i{background:var(--amber)} .api .err{color:var(--red)}
+.edge{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:baseline}
+.edge h2{margin:0}
+.edge .vd{color:var(--hi)}
+.kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:12px}
+.kpi .v{font-size:20px;color:var(--hi);font-variant-numeric:tabular-nums;white-space:nowrap}
+.kpi .s{color:var(--dim);font-size:11px}
+.pos{color:var(--green)} .neg{color:var(--red)}
+.grid2{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;margin-bottom:12px}
+canvas{width:100%;height:240px;display:block}
+.log{height:240px;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.log div{padding:1px 0}
+.lv-trade{color:var(--cyan)} .lv-warn{color:var(--amber)} .lv-error{color:var(--red)} .lv-info{color:var(--fg)}
+.ag{color:var(--violet)}
+.tbl{overflow:auto;max-height:340px}
+table{width:100%;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+th{position:sticky;top:0;background:var(--panel);text-align:left;color:var(--dim);font-weight:600;border-bottom:1px solid var(--line);padding:4px 8px;white-space:nowrap}
+td{padding:4px 8px;border-bottom:1px solid #121a17;vertical-align:top}
+td.n{text-align:right;white-space:nowrap}
+td.why{color:var(--dim);min-width:260px}
+td.nw{white-space:nowrap}
+.buy{color:var(--cyan)} .sell{color:var(--violet)}
+.empty{color:var(--dim);padding:10px 0}
+.sec{margin-bottom:12px}
+a{color:var(--cyan)}
+@media (max-width:1100px){.kpis{grid-template-columns:repeat(4,1fr)}.pipe{grid-template-columns:repeat(4,1fr)}.agent:nth-child(4n):after{display:none}}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}.pipe{grid-template-columns:repeat(2,1fr)}.agent:after{display:none}.right{margin-left:0}}
+</style>
+</head>
+<body>
+<div class="top">
+  <span class="brand">&gt;_ PAPERBOT <b>//</b> SOLANA MEMECOIN TERMINAL</span>
+  <span class="badge" id="mode">PAPER</span>
+  <span class="badge halt" id="halt" hidden>DAILY LOSS LIMIT – ENTRIES PAUSED</span>
+  <span class="muted right" id="clock">–</span>
+</div>
+
+<div class="pipe" id="pipe"></div>
+<div class="api" id="api"></div>
+
+<div class="kpis" id="kpis"></div>
+<div class="panel edge sec" id="edge"></div>
+
+<div class="grid2">
+  <div class="panel"><h2>Equity krivka (SOL)</h2><canvas id="eq"></canvas></div>
+  <div class="panel"><h2>Živý log agentov</h2><div class="log" id="log"></div></div>
+</div>
+
+<div class="panel sec"><h2>Otvorené pozície</h2><div class="tbl" id="open"></div></div>
+<div class="panel sec"><h2>História obchodov (filly s dôvodom)</h2><div class="tbl" id="trades"></div></div>
+<div class="grid2">
+  <div class="panel"><h2>Uzavreté pozície</h2><div class="tbl" id="closed"></div></div>
+  <div class="panel"><h2>Rug check</h2><div class="tbl" id="rug"></div></div>
+</div>
+<div class="panel sec"><h2>Critic pred nákupom <span class="muted" id="criticn"></span></h2><div class="tbl" id="critic"></div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const f = (x, d = 4) => x == null ? "–" : Number(x).toFixed(d);
+const sg = (x, d = 4) => x == null ? "–" : (x >= 0 ? "+" : "") + Number(x).toFixed(d);
+const cls = x => x > 0 ? "pos" : x < 0 ? "neg" : "";
+const t = ts => ts ? new Date(ts * 1000).toLocaleTimeString([], {hour12:false}) : "–";
+const dt = ts => ts ? new Date(ts * 1000).toLocaleString([], {hour12:false, month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit"}) : "–";
+const ago = (now, ts) => ts ? Math.max(0, Math.round(now - ts)) + "s" : "–";
+const short = m => m ? m.slice(0, 4) + "…" + m.slice(-4) : "";
+const dex = m => `<a href="https://dexscreener.com/solana/${esc(m)}" target="_blank" rel="noopener">${short(m)}</a>`;
+
+function table(rows, cols, empty) {
+  if (!rows.length) return `<div class="empty">${empty}</div>`;
+  return `<table><thead><tr>${cols.map(c => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => c[1](r)).join("")}</tr>`).join("") + `</tbody></table>`;
+}
+
+function kpi(label, value, sub, c = "") {
+  return `<div class="panel kpi"><h2>${label}</h2><div class="v ${c}">${value}</div><div class="s">${sub}</div></div>`;
+}
+
+function drawEquity(points, start) {
+  const cv = $("eq"), dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  g.font = "11px ui-monospace, Menlo, monospace";
+  if (points.length < 2) { g.fillStyle = "#5f7d6c"; g.fillText("čakám na dáta…", 10, 20); return; }
+  const ys = points.map(p => p.equity).concat([start]);
+  let lo = Math.min(...ys), hi = Math.max(...ys); const pad = (hi - lo) * 0.1 || 0.01; lo -= pad; hi += pad;
+  const L = 56, R = 8, T = 8, B = 18;
+  const X = i => L + (w - L - R) * i / (points.length - 1);
+  const Y = v => T + (h - T - B) * (1 - (v - lo) / (hi - lo));
+  g.strokeStyle = "#1d2a26"; g.fillStyle = "#5f7d6c"; g.lineWidth = 1;
+  for (let k = 0; k <= 4; k++) {
+    const v = lo + (hi - lo) * k / 4, y = Y(v);
+    g.beginPath(); g.moveTo(L, y); g.lineTo(w - R, y); g.stroke(); g.fillText(v.toFixed(3), 4, y + 4);
+  }
+  g.setLineDash([4, 4]); g.strokeStyle = "#ffc24b88";
+  g.beginPath(); g.moveTo(L, Y(start)); g.lineTo(w - R, Y(start)); g.stroke(); g.setLineDash([]);
+  const last = points[points.length - 1].equity, col = last >= start ? "#3ef08a" : "#ff5f6d";
+  const grad = g.createLinearGradient(0, T, 0, h - B); grad.addColorStop(0, col + "44"); grad.addColorStop(1, col + "00");
+  g.beginPath(); points.forEach((p, i) => i ? g.lineTo(X(i), Y(p.equity)) : g.moveTo(X(i), Y(p.equity)));
+  g.lineTo(X(points.length - 1), h - B); g.lineTo(X(0), h - B); g.closePath(); g.fillStyle = grad; g.fill();
+  g.beginPath(); points.forEach((p, i) => i ? g.lineTo(X(i), Y(p.equity)) : g.moveTo(X(i), Y(p.equity)));
+  g.strokeStyle = col; g.lineWidth = 1.6; g.stroke();
+  g.fillStyle = "#5f7d6c"; g.fillText(t(points[0].ts), L, h - 4);
+  const lt = t(points[points.length - 1].ts); g.fillText(lt, w - R - g.measureText(lt).width, h - 4);
+}
+
+let lastState = null;
+function render(s) {
+  lastState = s;
+  const a = s.account, now = s.now;
+  $("mode").textContent = `${s.mode.toUpperCase()} MODE · LIVE ${s.live_enabled ? "ENABLED" : "DISABLED IN CODE"}`;
+  $("halt").hidden = !s.halted;
+  $("clock").textContent = `tick ${ago(now, s.last_tick)} ago · ${new Date(now * 1000).toLocaleTimeString([], {hour12:false})}`;
+
+  $("pipe").innerHTML = s.agents.map(ag => {
+    const stale = ag.ts && now - ag.ts > 120;
+    return `<div class="agent ${stale ? "stale" : ag.state}"><div><span class="dot"></span><span class="nm">${ag.name}</span></div>
+      <div class="sum" title="${esc(ag.summary)}">${esc(ag.summary)}</div><div class="age">${ag.ts ? ago(now, ag.ts) + " ago" : "–"}</div></div>`;
+  }).join("");
+
+  const api = Object.entries(s.api || {});
+  $("api").innerHTML = api.length ? `<span>API (req/min):</span>` + api.map(([n, v]) => {
+    const pct = Math.min(100, v.last_min / v.limit_rpm * 100);
+    return `<span>${esc(n)} <span class="bar ${pct > 85 ? "hot" : ""}"><i style="width:${pct}%"></i></span><b>${v.last_min}</b>/${v.limit_rpm}` +
+      (v.http_429 ? ` <span class="err">429×${v.http_429}</span>` : "") + (v.errors ? ` <span class="err">err×${v.errors}</span>` : "") +
+      (v.blocked ? ` <span class="err">${esc(v.blocked)}</span>` : "") +
+      (v.paused_s ? ` <span class="err">pauza ${v.paused_s >= 120 ? Math.round(v.paused_s / 60) + " min" : v.paused_s + "s"}</span>` : "") + `</span>`;
+  }).join("") : `<span>API: mock režim (bez limitov)</span>`;
+
+  $("kpis").innerHTML = [
+    kpi("Balance", f(a.cash) + " ◎", `štart ${f(a.starting, 2)} SOL`),
+    kpi("Equity", f(a.equity) + " ◎", `pozície ${f(a.positions_value)} SOL`),
+    kpi("Celkový P&L", sg(a.total_pnl), `${sg(a.total_pnl_pct, 2)} %`, cls(a.total_pnl)),
+    kpi("Dnes", sg(a.today_pnl), `nerealizované ${sg(a.unrealized)}`, cls(a.today_pnl)),
+    kpi("Výhry / prehry", `<span class="pos">${a.wins}</span> / <span class="neg">${a.losses}</span>`, `win rate ${f(a.win_rate, 1)} %`),
+    kpi("Expozícia", f(a.exposure, 3) + " ◎", `${s.open_positions.length} otvorených · ${s.trades_last_hour} fillov/h`),
+    kpi("Poplatky + slip", f(a.fees) + " ◎", `realizované ${sg(a.realized)}`),
+  ].join("");
+
+  const e = s.edge;
+  $("edge").innerHTML = `<h2>Edge check</h2>` + (e.n ? [
+    `obchodov <b>${e.n}</b>`,
+    `priemer <b class="${cls(e.mean_pct)}">${sg(e.mean_pct, 2)} %</b>`,
+    `90 % rozsah <b>${sg(e.ci90_low, 2)} % až ${sg(e.ci90_high, 2)} %</b>`,
+    `P&L bez 3 najlepších <b class="${cls(e.pnl_without_best3_sol)}">${sg(e.pnl_without_best3_sol)} ◎</b>`,
+    s.failed_tx_fees ? `poplatky za zlyhané swapy <b class="neg">${f(s.failed_tx_fees, 5)} ◎</b>` : "",
+  ].filter(Boolean).map(x => `<span>${x}</span>`).join("") : "") + `<span class="vd">→ ${esc(e.verdict)}</span>`;
+
+  drawEquity(s.equity_curve, a.starting);
+
+  const lg = $("log"), atBottom = lg.scrollTop + lg.clientHeight >= lg.scrollHeight - 4;
+  lg.innerHTML = s.events.slice().reverse().map(e =>
+    `<div class="lv-${esc(e.level)}"><span class="muted">${t(e.ts)}</span> <span class="ag">[${esc(e.agent).padEnd(8)}]</span> ${esc(e.message)}</div>`).join("");
+  if (atBottom) lg.scrollTop = lg.scrollHeight;
+
+  $("open").innerHTML = table(s.open_positions, [
+    ["Token", r => `<td class="nw"><b>${esc(r.symbol)}</b> ${dex(r.mint)}<div class="muted">${esc(r.source)}</div></td>`],
+    ["Otvorené", r => `<td class="nw">${dt(r.opened_at)}</td>`],
+    ["Náklad ◎", r => `<td class="n">${f(r.cost_sol)}</td>`],
+    ["Hodnota ◎", r => `<td class="n">${f(r.last_value_sol)}</td>`],
+    ["P&L", r => { const p = r.last_value_sol + (r.partial_proceeds_sol || 0) - r.cost_sol; return `<td class="n ${cls(p)}">${sg(p)} (${sg(p / r.cost_sol * 100, 1)}%)` +
+      (r.partial_proceeds_sol ? `<div class="muted">z toho predané ${f(r.partial_proceeds_sol)} ◎</div>` : "") + `</td>`; }],
+    ["Peak ◎", r => `<td class="n">${f(r.peak_value_sol)}</td>`],
+    ["Dôvod vstupu", r => `<td class="why">${esc(r.entry_reason)}</td>`],
+  ], "žiadne otvorené pozície");
+
+  $("trades").innerHTML = table(s.trades, [
+    ["Čas", r => `<td class="nw">${dt(r.ts)}</td>`],
+    ["", r => `<td class="${r.side === "BUY" ? "buy" : "sell"}"><b>${r.side}</b></td>`],
+    ["Token", r => `<td class="nw"><b>${esc(r.symbol)}</b> ${dex(r.mint)}</td>`],
+    ["SOL", r => `<td class="n">${f(r.sol_amount)}</td>`],
+    ["Impact", r => `<td class="n">${f(r.price_impact_pct, 2)}%</td>`],
+    ["Slip ◎", r => `<td class="n">${f(r.slippage_cost_sol, 5)}</td>`],
+    ["Fee ◎", r => `<td class="n">${f(r.network_fee_sol, 5)}</td>`],
+    ["P&L ◎", r => `<td class="n ${cls(r.pnl_sol)}">${r.pnl_sol == null ? "" : sg(r.pnl_sol)}</td>`],
+    ["Dôvod", r => `<td class="why">${esc(r.reason)}</td>`],
+  ], "zatiaľ žiadne obchody");
+
+  $("closed").innerHTML = table(s.closed_positions, [
+    ["Token", r => `<td><b>${esc(r.symbol)}</b></td>`],
+    ["Držané", r => `<td class="n">${Math.round((r.closed_at - r.opened_at) / 60)} min</td>`],
+    ["P&L ◎", r => `<td class="n ${cls(r.pnl_sol)}">${sg(r.pnl_sol)}</td>`],
+    ["%", r => `<td class="n ${cls(r.pnl_pct)}">${sg(r.pnl_pct, 1)}</td>`],
+    ["Výstup", r => `<td class="why">${esc(r.exit_reason)}</td>`],
+  ], "zatiaľ nič uzavreté");
+
+  $("rug").innerHTML = table(s.rugchecks, [
+    ["Čas", r => `<td>${t(r.ts)}</td>`],
+    ["Token", r => `<td class="nw"><b>${esc(r.symbol)}</b> ${dex(r.mint)}</td>`],
+    ["", r => `<td class="${r.passed ? "pos" : "neg"}"><b>${r.passed ? "PASS" : "FAIL"}</b></td>`],
+    ["Detail", r => `<td class="why">${esc((r.passed ? r.warnings : r.reasons).join("; ") || `top10 ${f(r.top10_pct,1)}%, LP ${f(r.lp_locked_pct,0)}%, rt ${f(r.roundtrip_loss_pct,1)}%`)}</td>`],
+  ], "zatiaľ žiadne kontroly");
+
+  const cc = s.critic_counts || {approved: 0, rejected: 0};
+  $("criticn").innerHTML = `· <span class="pos">${cc.approved} schválené</span> / <span class="neg">${cc.rejected} zamietnuté</span>`;
+  $("critic").innerHTML = table(s.critic || [], [
+    ["Čas", r => `<td>${t(r.ts)}</td>`],
+    ["Token", r => `<td class="nw"><b>${esc(r.symbol)}</b> ${dex(r.mint)}<div class="muted">${esc(r.source)}</div></td>`],
+    ["", r => `<td class="${r.approved ? "pos" : "neg"}"><b>${r.approved ? "OK" : "STOP"}</b></td>`],
+    ["Veľkosť ◎", r => `<td class="n">${f(r.size_sol, 3)}</td>`],
+    ["Social", r => `<td class="n">${r.social_score == null ? "–" : sg(r.social_score, 1)}</td>`],
+    ["Dôvod", r => `<td class="why">${esc((r.approved ? r.notes : r.reasons).join("; ") || "bez výhrad")}</td>`],
+  ], "Critic zatiaľ nič neposudzoval");
+}
+
+async function poll() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    render(await r.json());
+  } catch (e) {
+    $("clock").textContent = "spojenie s botom stratené…";
+  }
+  setTimeout(poll, 3000);
+}
+window.addEventListener("resize", () => lastState && drawEquity(lastState.equity_curve, lastState.account.starting));
+poll();
+</script>
+</body>
+</html>

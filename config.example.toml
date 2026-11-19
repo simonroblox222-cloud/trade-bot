@@ -1,0 +1,132 @@
+# Skopíruj na config.toml a uprav. Všetky kľúče sú voliteľné (predvolené hodnoty sú v paperbot/config.py).
+# Live režim sa NEDÁ zapnúť konfiguráciou: mode musí byť "paper".
+mode = "paper"
+tick_seconds = 2                    # minimálna pauza medzi cyklami; tempo určujú limity API nižšie
+min_jupiter_budget_for_entry = 4    # nové rug checky len keď ostáva Jupiter budget
+jupiter_mark_share = 0.75           # podiel Jupiter limitu na preceňovanie otvorených pozícií
+db_path = "paperbot.sqlite"
+dashboard_host = "127.0.0.1"
+dashboard_port = 8787
+
+[api]
+jupiter_quote_url = "https://lite-api.jup.ag/swap/v1/quote"
+# jupiter_api_key = ""          # ak používaš api.jup.ag (posiela sa ako x-api-key); NIE je to kľúč k peňaženke
+solana_rpc_url = "https://api.mainnet-beta.solana.com"   # zadarmo, bez kľúča
+# Voliteľné (tiež zadarmo): free Helius/QuickNode endpoint. Kľúč nedávaj do súboru v repe,
+# použi env premennú:  export PAPERBOT_RPC_URL="https://mainnet.helius-rpc.com/?api-key=..."
+#   Windows PowerShell (natrvalo):  setx PAPERBOT_RPC_URL "https://mainnet.helius-rpc.com/?api-key=..."
+# alebo tu:  solana_rpc_url = "https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}"
+use_dexscreener = true
+use_pumpfun = true              # neoficiálne pump.fun API; často ho blokuje Cloudflare, bot vtedy pauzne len tento zdroj
+use_pumpportal = true           # pump.fun graduácie + dev peňaženky cez PumpPortal websocket (zadarmo, bez kľúča)
+use_geckoterminal = true        # GeckoTerminal nové a trendujúce Solana pooly (zadarmo, 30 req/min)
+use_takeovers = true            # DexScreener community takeovers
+use_boosts = true               # DexScreener platené boosty ako zdroj; Social ich ráta ako mínus
+watchlist_hours = 12            # tokeny z "latest" zoznamov sa sledujú ďalej, kým nedorastú do min. veku
+watchlist_size = 150            # koľko z nich sa preverí v každom skene (30 na jedno volanie DexScreeneru)
+
+[rate_limits]                       # požiadavky za minútu, tesne pod free limitmi (0 = bez limitu)
+jupiter = 55
+dexscreener_profiles = 55
+dexscreener_pairs = 250
+pumpfun = 20
+geckoterminal = 10
+rugcheck = 20
+# rpc = 40                          # verejné RPC; s vlastným RPC (free Helius) bot sám použije 300
+
+[social]                            # hype bez X API: len počty a prítomnosť, žiadny text sa nečíta
+min_score = 0.5                     # aspoň jeden odkaz (X, Telegram alebo web)
+fresh_token_minutes = 30            # mladšie tokeny prejdú aj bez odkazov (ak nemajú platený boost)
+x_link = 1.0                        # token má odkaz na X účet
+telegram_link = 0.5
+website = 0.5
+replies_some = 20                   # pump.fun komentáre: +1
+replies_many = 100                  # ... +2
+king_of_the_hill = 1.0              # token sa dostal na pump.fun "king of the hill"
+boost_penalty = 1.0                 # zaplatený DexScreener boost = mínus
+
+[critic]                            # posledná brána pred nákupom; len schváli alebo zamietne
+max_insider_pct = 10.0              # RugCheck report: insider peňaženky držia viac % supply
+max_insider_networks = 0            # prepojené skupiny peňaženiek (bundle/snipery)
+max_creator_pct = 5.0               # dev ešte drží viac % supply
+min_total_holders = 100
+max_dev_coins = 10                  # dev spustil viac coinov = sériový launcher
+max_dev_dead_share = 0.8            # podiel jeho starších coinov, ktoré umreli (pri >= 5)
+fresh_wallet_top_n = 8              # koľko top holderov preveriť
+fresh_wallet_max_txs = 5            # peňaženka s <= toľko transakciami je "čerstvá"
+max_fresh_wallets = 2
+max_fresh_wallets_pct = 8.0
+max_liquidity_drop_pct = 25.0       # likvidita klesla oproti maximu za posledných 15 min
+max_replies_per_minute = 5.0        # komentáre za minútu veku tokenu (boti)
+max_volume_to_liquidity_h1 = 15.0   # objem 1h / likvidita (wash trading)
+losing_streak = 5                   # po 5 prehrách po sebe krátka pauza
+losing_streak_pause_minutes = 5
+max_m5_pct = 60.0                   # nenaháňať zvislú sviečku
+max_h1_pct = 400.0
+max_size_vs_liquidity_pct = 2.0
+max_open_bonding_curve = 4
+max_open_same_source = 6
+
+[rug]
+min_liquidity_usd = 20000
+max_top10_holders_pct = 30
+max_single_holder_pct = 10
+min_lp_locked_pct = 90          # LP burned/locked podľa RugCheck
+require_rugcheck_api = true    # RugCheck nedostupný = počkať a skúsiť znova, nekupovať naslepo
+require_lp_data = true         # neznámy stav LP = nekupovať
+max_rugcheck_score_normalised = 50
+max_roundtrip_loss_pct = 8      # simulácia nákup -> predaj cez Jupiter quote
+allow_bonding_curve = true
+
+[risk]
+starting_balance_sol = 10
+position_size_pct = 1.5
+max_position_sol = 0.5
+min_position_sol = 0.05
+max_open_positions = 12
+max_total_exposure_pct = 30
+daily_loss_limit_pct = 10
+close_all_on_daily_limit = false
+# rýchlo dnu, rýchlo von: zober malý zisk a choď na ďalší token
+stop_loss_pct = 12
+take_profit_pct = 0                         # predá všetko pri tomto zisku; 0 = nikdy, zvyšok nechá bežať
+partial_take_profits = [[12, 0.5], [40, 0.3]]   # +12 % predá polovicu, +40 % 30 % zvyšku; [] = vypnuté
+runner_trailing_stop_pct = 20               # zvyšok po prvom predaji: predá až keď padne 20 % z vrcholu
+min_partial_sol = 0.03
+trailing_arm_pct = 10
+trailing_stop_pct = 7
+max_hold_minutes = 30
+time_exit_keep_pnl_pct = 5.0   # po max_hold beží ďalej len pozícia v zisku nad toto (trailing stop)
+max_hold_profit_minutes = 120  # aj ziskovú pozícia bez čiastočného predaja predá najneskôr po tomto
+pause_entries_when_exits_blind = true  # nekupovať, kým Jupiter nevie oceniť otvorené pozície
+token_cooldown_minutes = 10
+max_price_impact_pct = 3
+slippage_bps = 300              # slippage tolerancia v quote (pod minOut by reálny swap zlyhal)
+extra_slippage_bps = 100        # pesimistický fill oproti quote
+base_fee_sol = 0.000005
+priority_fee_sol = 0.0001
+jito_tip_sol = 0.0
+ata_rent_sol = 0.00203928
+latency_seconds = 2.0           # oneskorenie rozhodnutie -> swap; druhý quote po ňom, fill za horšiu cenu
+
+[strategy]
+min_liquidity_usd = 20000
+# "aktívne" paper nastavenie: kúpi pár, ktorý práve rastie a prevažujú kupujúci. Väčšina memecoinov
+# za hodinu klesá, preto h1 stačí "nepadá". Pre menej a silnejších signálov zvýš m5/h1/pomer/objem.
+min_volume_h1_usd = 10000
+min_pair_age_minutes = 5
+max_pair_age_hours = 168
+min_price_change_m5_pct = 0.5
+min_price_change_h1_pct = -15
+max_price_change_h1_pct = 500
+min_buy_sell_ratio_m5 = 1.0
+hype_score = 2.5                # silný organický hype (Social skóre) uvoľní momentum:
+hype_min_price_change_m5_pct = 0
+hype_min_buy_sell_ratio_m5 = 1.0
+hype_min_volume_h1_usd = 5000
+max_candidates_per_tick = 5
+confirm_cycles = 2              # signál musí platiť toľko skenov po sebe
+max_entry_m5_pct = 10.0        # nekupovať, keď 5-min sviečka vyskočila viac ako toto (kúpa vrcholu)
+spike_window_minutes = 10.0    # po prudkom raste za toto okno ...
+spike_range_pct = 15.0         # ... (viac ako +15 % od minima) ...
+spike_top_pct = 3.0            # ... počkať, kým cena klesne aspoň 3 % pod vrchol
